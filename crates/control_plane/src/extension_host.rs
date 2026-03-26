@@ -77,6 +77,24 @@ pub struct McpToolPolicy {
     pub tool_name: String,
     pub required_scope: String,
     pub audience: String,
+    pub risk_class: McpToolRiskClass,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum McpToolRiskClass {
+    ReadOnly,
+    Mutating,
+    Destructive,
+}
+
+impl McpToolRiskClass {
+    pub const fn label(self) -> &'static str {
+        match self {
+            McpToolRiskClass::ReadOnly => "read_only",
+            McpToolRiskClass::Mutating => "mutating",
+            McpToolRiskClass::Destructive => "destructive",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,6 +235,10 @@ pub enum McpTokenAuthorizationError {
     ScopeMissing {
         required_scope: String,
     },
+    DestructiveToolBlocked {
+        tool_name: String,
+        reason: String,
+    },
     ExtensionInactive(String),
 }
 
@@ -256,6 +278,10 @@ impl fmt::Display for McpTokenAuthorizationError {
             McpTokenAuthorizationError::ScopeMissing { required_scope } => {
                 write!(f, "MCP token is missing required scope `{required_scope}`")
             }
+            McpTokenAuthorizationError::DestructiveToolBlocked { tool_name, reason } => write!(
+                f,
+                "MCP destructive tool `{tool_name}` blocked by policy: {reason}"
+            ),
             McpTokenAuthorizationError::ExtensionInactive(id) => write!(
                 f,
                 "extension is not enabled for MCP token authorization: {id}"
@@ -374,6 +400,46 @@ fn normalize_mcp_scope_set(scopes: &[String]) -> Option<Vec<String>> {
 
 fn normalize_mcp_tool_key(tool_name: &str) -> Option<String> {
     normalize_non_empty_label(tool_name).map(|value| value.to_ascii_lowercase())
+}
+
+fn looks_destructive_keyword(value: &str) -> bool {
+    let lowered = value.to_ascii_lowercase();
+    [
+        "delete", "remove", "destroy", "wipe", "drop", "truncate", "reset", "revoke", "shutdown",
+        "kill", "exec", "shell", "write", "patch", "modify", "chmod", "chown", "unlink", "purge",
+    ]
+    .iter()
+    .any(|token| lowered.contains(token))
+}
+
+fn policy_looks_destructive(policy: &McpToolPolicy) -> bool {
+    looks_destructive_keyword(policy.tool_name.as_str())
+        || looks_destructive_keyword(policy.required_scope.as_str())
+}
+
+fn has_granted_destructive_permission(runtime: &ExtensionRuntime) -> bool {
+    [
+        ExtensionPermission::FilesystemEdits,
+        ExtensionPermission::Shell,
+        ExtensionPermission::Git,
+        ExtensionPermission::ModelDownloads,
+    ]
+    .iter()
+    .any(|permission| {
+        runtime
+            .granted_permissions
+            .get(permission)
+            .copied()
+            .unwrap_or(false)
+    })
+}
+
+fn declared_destructive_side_effect(runtime: &ExtensionRuntime) -> bool {
+    runtime
+        .manifest
+        .declared_side_effects
+        .iter()
+        .any(|value| looks_destructive_keyword(value))
 }
 
 fn mint_mcp_scoped_token_secret() -> String {
@@ -868,6 +934,21 @@ impl ExtensionHost {
         required_scope: &str,
         audience: &str,
     ) -> Result<(), McpToolPolicyError> {
+        self.set_mcp_tool_policy_with_risk(
+            tool_name,
+            required_scope,
+            audience,
+            McpToolRiskClass::ReadOnly,
+        )
+    }
+
+    pub fn set_mcp_tool_policy_with_risk(
+        &mut self,
+        tool_name: &str,
+        required_scope: &str,
+        audience: &str,
+        risk_class: McpToolRiskClass,
+    ) -> Result<(), McpToolPolicyError> {
         let Some(tool_key) = normalize_mcp_tool_key(tool_name) else {
             return Err(McpToolPolicyError::InvalidToolName);
         };
@@ -883,6 +964,7 @@ impl ExtensionHost {
                 tool_name: tool_name.trim().to_string(),
                 required_scope: normalized_scope,
                 audience: normalized_audience,
+                risk_class,
             },
         );
         Ok(())
@@ -1050,6 +1132,36 @@ impl ExtensionHost {
             return Err(McpTokenAuthorizationError::ScopeMissing {
                 required_scope: policy.required_scope.clone(),
             });
+        }
+        if policy_looks_destructive(policy)
+            && !matches!(policy.risk_class, McpToolRiskClass::Destructive)
+        {
+            return Err(McpTokenAuthorizationError::DestructiveToolBlocked {
+                tool_name: policy.tool_name.clone(),
+                reason: "policy risk class must be destructive for destructive semantics"
+                    .to_string(),
+            });
+        }
+        if matches!(policy.risk_class, McpToolRiskClass::Destructive) {
+            if !has_granted_destructive_permission(runtime) {
+                return Err(McpTokenAuthorizationError::DestructiveToolBlocked {
+                    tool_name: policy.tool_name.clone(),
+                    reason: "extension lacks granted destructive permissions".to_string(),
+                });
+            }
+            if !declared_destructive_side_effect(runtime) {
+                return Err(McpTokenAuthorizationError::DestructiveToolBlocked {
+                    tool_name: policy.tool_name.clone(),
+                    reason: "manifest declared_side_effects missing destructive disclosure"
+                        .to_string(),
+                });
+            }
+            if runtime.manifest.requires_overbroad_approval() && !runtime.overbroad_approved {
+                return Err(McpTokenAuthorizationError::DestructiveToolBlocked {
+                    tool_name: policy.tool_name.clone(),
+                    reason: "overbroad approval required for destructive tool".to_string(),
+                });
+            }
         }
 
         Ok(McpAuthorizedToolCall {
@@ -1478,8 +1590,8 @@ pub fn default_extension_host() -> ExtensionHost {
 mod tests {
     use super::{
         ExtensionClass, ExtensionHost, ExtensionHostError, ExtensionManifest,
-        ExtensionManifestSignature, ExtensionPermission, ExtensionState, TrustedManifestSigner,
-        default_extension_host,
+        ExtensionManifestSignature, ExtensionPermission, ExtensionState, McpToolRiskClass,
+        TrustedManifestSigner, default_extension_host,
     };
     use base64::Engine as _;
     use ed25519_dalek::{Signer, SigningKey};
@@ -2150,6 +2262,144 @@ mod tests {
         assert!(matches!(
             audience_mismatch,
             super::McpTokenAuthorizationError::PolicyAudienceMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn destructive_tool_scope_is_blocked_when_policy_risk_class_is_not_destructive() {
+        let mut host = ExtensionHost::new();
+        register_test_manifest_signer(&mut host);
+        assert!(host.register(overbroad_manifest()).is_ok());
+        assert!(host.grant_all_permissions("overbroad-tool").is_ok());
+        assert!(host.set_overbroad_approved("overbroad-tool", true).is_ok());
+        assert!(host.set_enabled("overbroad-tool", true).is_ok());
+        assert!(
+            host.set_mcp_tool_policy("health.status", "tool.exec", "mcp://tools/exec")
+                .is_ok()
+        );
+
+        let issued = host.issue_mcp_scoped_token(
+            "overbroad-tool",
+            "session-danger-default-risk",
+            "mcp://tools/exec",
+            vec!["tool.exec".to_string()],
+            10_000,
+            1_000,
+        );
+        assert!(issued.is_ok());
+        let issued = match issued {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+
+        let denied = host.authorize_mcp_tool_call(
+            issued.token.as_str(),
+            "health.status",
+            "mcp://tools/exec",
+            1_100,
+        );
+        assert!(denied.is_err());
+        let denied = match denied {
+            Ok(_) => return,
+            Err(value) => value,
+        };
+        assert!(matches!(
+            denied,
+            super::McpTokenAuthorizationError::DestructiveToolBlocked { .. }
+        ));
+    }
+
+    #[test]
+    fn destructive_tool_is_allowed_when_policy_is_explicit_and_permissions_match() {
+        let mut host = ExtensionHost::new();
+        register_test_manifest_signer(&mut host);
+        assert!(host.register(overbroad_manifest()).is_ok());
+        assert!(host.grant_all_permissions("overbroad-tool").is_ok());
+        assert!(host.set_overbroad_approved("overbroad-tool", true).is_ok());
+        assert!(host.set_enabled("overbroad-tool", true).is_ok());
+        assert!(
+            host.set_mcp_tool_policy_with_risk(
+                "health.status",
+                "tool.exec",
+                "mcp://tools/exec",
+                McpToolRiskClass::Destructive,
+            )
+            .is_ok()
+        );
+
+        let issued = host.issue_mcp_scoped_token(
+            "overbroad-tool",
+            "session-danger-explicit-risk",
+            "mcp://tools/exec",
+            vec!["tool.exec".to_string()],
+            10_000,
+            1_000,
+        );
+        assert!(issued.is_ok());
+        let issued = match issued {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+
+        let authorized = host.authorize_mcp_tool_call(
+            issued.token.as_str(),
+            "health.status",
+            "mcp://tools/exec",
+            1_100,
+        );
+        assert!(authorized.is_ok());
+        let authorized = match authorized {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        assert_eq!(authorized.required_scope, "tool.exec");
+    }
+
+    #[test]
+    fn destructive_policy_is_blocked_without_destructive_permissions_and_disclosure() {
+        let mut host = ExtensionHost::new();
+        register_test_manifest_signer(&mut host);
+        assert!(host.register(provider_manifest()).is_ok());
+        assert!(host.grant_all_permissions("provider").is_ok());
+        assert!(host.set_enabled("provider", true).is_ok());
+        assert!(
+            host.set_mcp_tool_policy_with_risk(
+                "chat.send",
+                "provider.chat",
+                "mcp://tools/chat",
+                McpToolRiskClass::Destructive,
+            )
+            .is_ok()
+        );
+
+        let issued = host.issue_mcp_scoped_token(
+            "provider",
+            "session-danger-provider",
+            "mcp://tools/chat",
+            vec!["provider.chat".to_string()],
+            10_000,
+            1_000,
+        );
+        assert!(issued.is_ok());
+        let issued = match issued {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+
+        let denied = host.authorize_mcp_tool_call(
+            issued.token.as_str(),
+            "chat.send",
+            "mcp://tools/chat",
+            1_100,
+        );
+        assert!(denied.is_err());
+        let denied = match denied {
+            Ok(_) => return,
+            Err(value) => value,
+        };
+        assert!(matches!(
+            denied,
+            super::McpTokenAuthorizationError::DestructiveToolBlocked { .. }
         ));
     }
 
