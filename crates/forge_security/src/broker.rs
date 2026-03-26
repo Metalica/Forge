@@ -1,5 +1,6 @@
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
+use argon2::{Algorithm, Argon2, Params, Version};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use rand::RngCore;
@@ -18,6 +19,10 @@ const BROKER_AUDIT_SCHEMA_VERSION: u32 = 1;
 const BROKER_KEY_WRAP_AAD: &[u8] = b"forge-security-broker-key-wrap-v1";
 const SECRET_ENV_REFERENCE_PREFIX: &str = "forge-secret-handle://";
 const MAX_AUDIT_EVENTS: usize = 4096;
+const ARGON2ID_DEFAULT_MEMORY_KIB: u32 = 19 * 1024;
+const ARGON2ID_DEFAULT_ITERATIONS: u32 = 2;
+const ARGON2ID_DEFAULT_PARALLELISM: u32 = 1;
+const ARGON2ID_MIN_SALT_BYTES: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecretBrokerError {
@@ -281,6 +286,139 @@ impl KekAdapter for EnvAesKekAdapter {
 
     fn wrap_key(&self, dek: &[u8; 32]) -> Result<Vec<u8>, SecretBrokerError> {
         self.resolve_delegate()?.wrap_key(dek)
+    }
+
+    fn unwrap_key(&self, wrapped_dek: &[u8]) -> Result<[u8; 32], SecretBrokerError> {
+        self.resolve_delegate()?.unwrap_key(wrapped_dek)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvArgon2idKekAdapter {
+    key_id: String,
+    passphrase_env_key: String,
+    salt_env_key: String,
+    memory_kib: u32,
+    iterations: u32,
+    parallelism: u32,
+}
+
+impl EnvArgon2idKekAdapter {
+    pub fn new(
+        key_id: impl Into<String>,
+        passphrase_env_key: impl Into<String>,
+        salt_env_key: impl Into<String>,
+    ) -> Result<Self, SecretBrokerError> {
+        Self::new_with_params(
+            key_id,
+            passphrase_env_key,
+            salt_env_key,
+            ARGON2ID_DEFAULT_MEMORY_KIB,
+            ARGON2ID_DEFAULT_ITERATIONS,
+            ARGON2ID_DEFAULT_PARALLELISM,
+        )
+    }
+
+    fn new_with_params(
+        key_id: impl Into<String>,
+        passphrase_env_key: impl Into<String>,
+        salt_env_key: impl Into<String>,
+        memory_kib: u32,
+        iterations: u32,
+        parallelism: u32,
+    ) -> Result<Self, SecretBrokerError> {
+        let key_id = key_id.into();
+        let passphrase_env_key = passphrase_env_key.into();
+        let salt_env_key = salt_env_key.into();
+        if key_id.trim().is_empty() {
+            return Err(SecretBrokerError::new("kek key_id cannot be empty"));
+        }
+        if passphrase_env_key.trim().is_empty() {
+            return Err(SecretBrokerError::new(
+                "argon2id passphrase env key cannot be empty",
+            ));
+        }
+        if salt_env_key.trim().is_empty() {
+            return Err(SecretBrokerError::new(
+                "argon2id salt env key cannot be empty",
+            ));
+        }
+        if memory_kib < 8 {
+            return Err(SecretBrokerError::new(
+                "argon2id memory cost must be at least 8 KiB",
+            ));
+        }
+        if iterations == 0 {
+            return Err(SecretBrokerError::new(
+                "argon2id iterations must be greater than zero",
+            ));
+        }
+        if parallelism == 0 {
+            return Err(SecretBrokerError::new(
+                "argon2id parallelism must be greater than zero",
+            ));
+        }
+        Ok(Self {
+            key_id,
+            passphrase_env_key,
+            salt_env_key,
+            memory_kib,
+            iterations,
+            parallelism,
+        })
+    }
+
+    fn resolve_delegate(&self) -> Result<StaticAesKekAdapter, SecretBrokerError> {
+        let passphrase = std::env::var(&self.passphrase_env_key).map_err(|_| {
+            SecretBrokerError::new(format!(
+                "missing argon2id passphrase env var {}",
+                self.passphrase_env_key
+            ))
+        })?;
+        if passphrase.trim().is_empty() {
+            return Err(SecretBrokerError::new(format!(
+                "argon2id passphrase env var {} cannot be empty",
+                self.passphrase_env_key
+            )));
+        }
+        let mut passphrase_bytes = passphrase.into_bytes();
+        let raw_salt = std::env::var(&self.salt_env_key).map_err(|_| {
+            clear_bytes(passphrase_bytes.as_mut_slice());
+            SecretBrokerError::new(format!(
+                "missing argon2id salt env var {}",
+                self.salt_env_key
+            ))
+        })?;
+        let mut salt_bytes = match parse_argon2_salt_bytes(&raw_salt) {
+            Ok(value) => value,
+            Err(error) => {
+                clear_bytes(passphrase_bytes.as_mut_slice());
+                return Err(error);
+            }
+        };
+
+        let derived_key = derive_argon2id_kek_bytes(
+            passphrase_bytes.as_slice(),
+            salt_bytes.as_slice(),
+            self.memory_kib,
+            self.iterations,
+            self.parallelism,
+        );
+        clear_bytes(passphrase_bytes.as_mut_slice());
+        clear_bytes(salt_bytes.as_mut_slice());
+        StaticAesKekAdapter::new(self.key_id.clone(), derived_key?)
+    }
+}
+
+impl KekAdapter for EnvArgon2idKekAdapter {
+    fn kek_id(&self) -> &str {
+        &self.key_id
+    }
+
+    fn wrap_key(&self, _dek: &[u8; 32]) -> Result<Vec<u8>, SecretBrokerError> {
+        Err(SecretBrokerError::new(
+            "argon2id fallback KEK adapter is unwrap-only and cannot wrap new records",
+        ))
     }
 
     fn unwrap_key(&self, wrapped_dek: &[u8]) -> Result<[u8; 32], SecretBrokerError> {
@@ -868,6 +1006,71 @@ fn parse_kek_bytes(raw: &str) -> Result<[u8; 32], SecretBrokerError> {
     Ok(bytes)
 }
 
+fn parse_argon2_salt_bytes(raw: &str) -> Result<Vec<u8>, SecretBrokerError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(SecretBrokerError::new(
+            "argon2id salt env value cannot be empty",
+        ));
+    }
+
+    let decoded = if let Some(hex_value) = trimmed.strip_prefix("hex:") {
+        if hex_value.len() % 2 != 0 {
+            return Err(SecretBrokerError::new(
+                "argon2id salt hex payload must have even length",
+            ));
+        }
+        if !hex_value.chars().all(|char| char.is_ascii_hexdigit()) {
+            return Err(SecretBrokerError::new(
+                "argon2id salt hex payload is invalid",
+            ));
+        }
+        let mut output = Vec::with_capacity(hex_value.len() / 2);
+        let mut index = 0usize;
+        while index < hex_value.len() {
+            let pair = &hex_value[index..index + 2];
+            let byte = u8::from_str_radix(pair, 16)
+                .map_err(|_| SecretBrokerError::new("argon2id salt hex payload is invalid"))?;
+            output.push(byte);
+            index += 2;
+        }
+        output
+    } else if let Some(base64_value) = trimmed.strip_prefix("b64:") {
+        B64.decode(base64_value.as_bytes())
+            .map_err(|_| SecretBrokerError::new("argon2id salt base64 payload is invalid"))?
+    } else {
+        trimmed.as_bytes().to_vec()
+    };
+
+    if decoded.len() < ARGON2ID_MIN_SALT_BYTES {
+        return Err(SecretBrokerError::new(format!(
+            "argon2id salt must be at least {} bytes",
+            ARGON2ID_MIN_SALT_BYTES
+        )));
+    }
+
+    Ok(decoded)
+}
+
+fn derive_argon2id_kek_bytes(
+    passphrase: &[u8],
+    salt: &[u8],
+    memory_kib: u32,
+    iterations: u32,
+    parallelism: u32,
+) -> Result<[u8; 32], SecretBrokerError> {
+    let params = Params::new(memory_kib, iterations, parallelism, Some(32))
+        .map_err(|_| SecretBrokerError::new("argon2id KEK parameters are invalid"))?;
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    let mut derived_key = [0u8; 32];
+    argon2
+        .hash_password_into(passphrase, salt, &mut derived_key)
+        .map_err(|_| {
+            SecretBrokerError::new("argon2id KEK derivation failed for provided passphrase/salt")
+        })?;
+    Ok(derived_key)
+}
+
 fn decode_b64_required(
     value: Option<&str>,
     missing_message: &str,
@@ -995,10 +1198,10 @@ fn now_unix_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        EnvAesKekAdapter, SecretAuditAction, SecretAuditDecision, SecretBroker, SecretHandle,
-        SecretInjectionTarget, StaticAesKekAdapter, is_secret_env_reference,
-        render_secret_env_reference, resolve_secret_env_reference, rotate_encrypted_store_kek,
-        with_global_secret_broker,
+        EnvAesKekAdapter, EnvArgon2idKekAdapter, KekAdapter, SecretAuditAction,
+        SecretAuditDecision, SecretBroker, SecretHandle, SecretInjectionTarget,
+        StaticAesKekAdapter, is_secret_env_reference, render_secret_env_reference,
+        resolve_secret_env_reference, rotate_encrypted_store_kek, with_global_secret_broker,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -1207,6 +1410,46 @@ mod tests {
         let saved = broker.save_encrypted_to_path(path.as_path(), &adapter);
         assert!(saved.is_err());
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn argon2id_derivation_is_deterministic_for_same_inputs() {
+        let first =
+            super::derive_argon2id_kek_bytes(b"unit-test-passphrase", b"salt-salt-1234", 8, 2, 1);
+        assert!(first.is_ok());
+        let second =
+            super::derive_argon2id_kek_bytes(b"unit-test-passphrase", b"salt-salt-1234", 8, 2, 1);
+        assert!(second.is_ok());
+        assert_eq!(
+            match first {
+                Ok(value) => value,
+                Err(_) => return,
+            },
+            match second {
+                Ok(value) => value,
+                Err(_) => return,
+            }
+        );
+    }
+
+    #[test]
+    fn argon2id_fallback_adapter_is_unwrap_only_and_fails_closed_without_env() {
+        let adapter = EnvArgon2idKekAdapter::new(
+            "argon2id-fallback",
+            "FORGE_SECURITY_TEST_MISSING_ARGON2_PASS",
+            "FORGE_SECURITY_TEST_MISSING_ARGON2_SALT",
+        );
+        assert!(adapter.is_ok());
+        let adapter = match adapter {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+
+        let wrap_result = adapter.wrap_key(&[1u8; 32]);
+        assert!(wrap_result.is_err());
+
+        let unwrap_result = adapter.unwrap_key(&[0u8; 13]);
+        assert!(unwrap_result.is_err());
     }
 
     #[test]
