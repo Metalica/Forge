@@ -2,8 +2,6 @@ use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
-#[cfg(unix)]
-use nix::sys::mman::{mlock, munlock};
 use rand::RngCore;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
@@ -906,30 +904,16 @@ fn try_lock_secret_bytes(bytes: &mut [u8]) -> bool {
     if bytes.is_empty() {
         return false;
     }
-    #[cfg(unix)]
-    {
-        return mlock(bytes).is_ok();
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = bytes;
-        false
-    }
+    let _ = bytes;
+    false
 }
 
 fn try_unlock_secret_bytes(bytes: &mut [u8]) -> bool {
     if bytes.is_empty() {
         return false;
     }
-    #[cfg(unix)]
-    {
-        return munlock(bytes).is_ok();
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = bytes;
-        false
-    }
+    let _ = bytes;
+    false
 }
 
 fn redact_sensitive_text(input: impl AsRef<str>) -> String {
