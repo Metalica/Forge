@@ -13,3 +13,5 @@ workspace = true
 urm = { path = "../urm" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+base64 = "0.22"
+ed25519-dalek = "2.1"

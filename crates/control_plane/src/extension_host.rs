@@ -1,7 +1,26 @@
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
+
+const FORGE_BUILTIN_MANIFEST_KEY_ID: &str = "forge-builtin-ed25519";
+const FORGE_BUILTIN_MANIFEST_PUBLISHER: &str = "forge-core";
+// Bootstrap signer seed for built-in manifests. This unblocks P1 cryptographic verification
+// until signed policy bundles provide externalized trust-store key distribution.
+const FORGE_BUILTIN_MANIFEST_SIGNING_SEED: [u8; 32] = [
+    0x13, 0x6d, 0x2e, 0x89, 0x44, 0xbb, 0x27, 0x8f, 0x90, 0x11, 0xce, 0x38, 0x52, 0x7a, 0xf0, 0x61,
+    0x3e, 0xaa, 0x74, 0x2a, 0x8c, 0x1d, 0x96, 0xfe, 0x54, 0xb8, 0x4f, 0x6a, 0xc9, 0x37, 0x15, 0xe2,
+];
+
+#[derive(Debug, Clone)]
+pub struct TrustedManifestSigner {
+    pub key_id: String,
+    pub publisher: String,
+    pub verifying_key: VerifyingKey,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ExtensionClass {
@@ -96,12 +115,76 @@ fn is_sha256_hex(value: &str) -> bool {
     value.len() == 64 && value.chars().all(|candidate| candidate.is_ascii_hexdigit())
 }
 
+fn default_manifest_signing_key() -> SigningKey {
+    SigningKey::from_bytes(&FORGE_BUILTIN_MANIFEST_SIGNING_SEED)
+}
+
+fn default_manifest_signers() -> HashMap<String, TrustedManifestSigner> {
+    let signing_key = default_manifest_signing_key();
+    let mut signers = HashMap::new();
+    signers.insert(
+        FORGE_BUILTIN_MANIFEST_KEY_ID.to_string(),
+        TrustedManifestSigner {
+            key_id: FORGE_BUILTIN_MANIFEST_KEY_ID.to_string(),
+            publisher: FORGE_BUILTIN_MANIFEST_PUBLISHER.to_string(),
+            verifying_key: signing_key.verifying_key(),
+        },
+    );
+    signers
+}
+
+fn sign_manifest_with_key(
+    manifest: &ExtensionManifest,
+    key_id: &str,
+    signing_key: &SigningKey,
+) -> Option<ExtensionManifestSignature> {
+    let payload = manifest.signature_payload_json()?;
+    let signature = signing_key.sign(payload.as_slice());
+    Some(ExtensionManifestSignature {
+        key_id: key_id.to_string(),
+        algorithm: "ed25519".to_string(),
+        value: BASE64_STANDARD.encode(signature.to_bytes()),
+    })
+}
+
+fn sign_manifest_with_builtin_key(
+    manifest: &ExtensionManifest,
+) -> Option<ExtensionManifestSignature> {
+    let signing_key = default_manifest_signing_key();
+    sign_manifest_with_key(manifest, FORGE_BUILTIN_MANIFEST_KEY_ID, &signing_key)
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ManifestSignaturePayload {
+    id: String,
+    display_name: String,
+    publisher: String,
+    version: String,
+    minimum_forge_version: String,
+    package_checksum_sha256: String,
+    class: String,
+    idle_cost_mb: u32,
+    startup_cost_ms: u32,
+    memory_budget_mb: u32,
+    cpu_budget_percent: u32,
+    requires_network: bool,
+    background_activity: String,
+    requested_permissions: Vec<String>,
+    declared_capabilities: Vec<String>,
+    declared_side_effects: Vec<String>,
+    revoked: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExtensionSecurityGateError {
     UnsignedManifest,
     RevokedManifest,
     IncompatibleForgeVersion { minimum: String, current: String },
     MissingMetadata(&'static str),
+    UntrustedManifestSigner(String),
+    InvalidSignatureEncoding,
+    SignatureVerificationFailed,
+    SignerPublisherMismatch { expected: String, actual: String },
 }
 
 impl fmt::Display for ExtensionSecurityGateError {
@@ -120,6 +203,19 @@ impl fmt::Display for ExtensionSecurityGateError {
             ExtensionSecurityGateError::MissingMetadata(field) => {
                 write!(f, "manifest missing required metadata: {field}")
             }
+            ExtensionSecurityGateError::UntrustedManifestSigner(key_id) => {
+                write!(f, "untrusted manifest signer key_id={key_id}")
+            }
+            ExtensionSecurityGateError::InvalidSignatureEncoding => {
+                f.write_str("manifest signature payload is not valid base64 or length")
+            }
+            ExtensionSecurityGateError::SignatureVerificationFailed => {
+                f.write_str("manifest signature verification failed")
+            }
+            ExtensionSecurityGateError::SignerPublisherMismatch { expected, actual } => write!(
+                f,
+                "manifest signer publisher mismatch expected={expected} actual={actual}"
+            ),
         }
     }
 }
@@ -194,7 +290,60 @@ impl ExtensionManifest {
         Ok(())
     }
 
-    fn security_gate(&self, forge_version: &str) -> Result<(), ExtensionSecurityGateError> {
+    fn signature_payload_json(&self) -> Option<Vec<u8>> {
+        let mut permissions = self
+            .requested_permissions
+            .iter()
+            .map(|permission| permission.label().to_string())
+            .collect::<Vec<_>>();
+        permissions.sort();
+        permissions.dedup();
+
+        let mut capabilities = self
+            .declared_capabilities
+            .iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        capabilities.sort();
+        capabilities.dedup();
+
+        let mut side_effects = self
+            .declared_side_effects
+            .iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        side_effects.sort();
+        side_effects.dedup();
+
+        let payload = ManifestSignaturePayload {
+            id: self.id.clone(),
+            display_name: self.display_name.clone(),
+            publisher: self.publisher.clone(),
+            version: self.version.clone(),
+            minimum_forge_version: self.minimum_forge_version.clone(),
+            package_checksum_sha256: self.package_checksum_sha256.clone(),
+            class: self.class.label().to_string(),
+            idle_cost_mb: self.idle_cost_mb,
+            startup_cost_ms: self.startup_cost_ms,
+            memory_budget_mb: self.memory_budget_mb,
+            cpu_budget_percent: self.cpu_budget_percent,
+            requires_network: self.requires_network,
+            background_activity: self.background_activity.clone(),
+            requested_permissions: permissions,
+            declared_capabilities: capabilities,
+            declared_side_effects: side_effects,
+            revoked: self.revoked,
+        };
+        serde_json::to_vec(&payload).ok()
+    }
+
+    fn security_gate(
+        &self,
+        forge_version: &str,
+        trusted_manifest_signers: &HashMap<String, TrustedManifestSigner>,
+    ) -> Result<(), ExtensionSecurityGateError> {
         if self.revoked {
             return Err(ExtensionSecurityGateError::RevokedManifest);
         }
@@ -238,6 +387,36 @@ impl ExtensionManifest {
                 "signature.algorithm",
             ));
         }
+        let signer = trusted_manifest_signers
+            .get(signature.key_id.as_str())
+            .ok_or_else(|| {
+                ExtensionSecurityGateError::UntrustedManifestSigner(signature.key_id.clone())
+            })?;
+        if !signer
+            .publisher
+            .eq_ignore_ascii_case(self.publisher.as_str())
+        {
+            return Err(ExtensionSecurityGateError::SignerPublisherMismatch {
+                expected: signer.publisher.clone(),
+                actual: self.publisher.clone(),
+            });
+        }
+
+        let payload =
+            self.signature_payload_json()
+                .ok_or(ExtensionSecurityGateError::MissingMetadata(
+                    "signature_payload",
+                ))?;
+        let signature_bytes = BASE64_STANDARD
+            .decode(signature.value.as_bytes())
+            .map_err(|_| ExtensionSecurityGateError::InvalidSignatureEncoding)?;
+        let parsed_signature = Signature::try_from(signature_bytes.as_slice())
+            .map_err(|_| ExtensionSecurityGateError::InvalidSignatureEncoding)?;
+        signer
+            .verifying_key
+            .verify(payload.as_slice(), &parsed_signature)
+            .map_err(|_| ExtensionSecurityGateError::SignatureVerificationFailed)?;
+
         let minimum = parse_semver_core(self.minimum_forge_version.as_str()).ok_or(
             ExtensionSecurityGateError::MissingMetadata("minimum_forge_version"),
         )?;
@@ -351,6 +530,7 @@ pub enum ExtensionHostError {
 pub struct ExtensionHost {
     extensions: HashMap<String, ExtensionRuntime>,
     forge_version: String,
+    trusted_manifest_signers: HashMap<String, TrustedManifestSigner>,
 }
 
 impl Default for ExtensionHost {
@@ -374,7 +554,13 @@ impl ExtensionHost {
         Self {
             extensions: HashMap::new(),
             forge_version: normalized,
+            trusted_manifest_signers: default_manifest_signers(),
         }
+    }
+
+    pub fn register_trusted_manifest_signer(&mut self, signer: TrustedManifestSigner) {
+        self.trusted_manifest_signers
+            .insert(signer.key_id.clone(), signer);
     }
 
     pub fn register(&mut self, manifest: ExtensionManifest) -> Result<(), ExtensionHostError> {
@@ -498,7 +684,10 @@ impl ExtensionHost {
                 .extensions
                 .get(id)
                 .ok_or_else(|| ExtensionHostError::NotFound(id.to_string()))?;
-            if let Err(error) = runtime.manifest.security_gate(self.forge_version.as_str()) {
+            if let Err(error) = runtime
+                .manifest
+                .security_gate(self.forge_version.as_str(), &self.trusted_manifest_signers)
+            {
                 return Err(ExtensionHostError::SecurityPolicyBlocked {
                     extension_id: id.to_string(),
                     reason: error.to_string(),
@@ -632,10 +821,10 @@ impl ExtensionHost {
 
 pub fn default_extension_host() -> ExtensionHost {
     let mut host = ExtensionHost::new();
-    let _ = host.register(ExtensionManifest {
+    let mut viewer_manifest = ExtensionManifest {
         id: "viewer-session-inspector".to_string(),
         display_name: "Session Inspector".to_string(),
-        publisher: "forge-core".to_string(),
+        publisher: FORGE_BUILTIN_MANIFEST_PUBLISHER.to_string(),
         version: "1.0.0".to_string(),
         minimum_forge_version: "0.1.0".to_string(),
         package_checksum_sha256: "1111111111111111111111111111111111111111111111111111111111111111"
@@ -650,17 +839,16 @@ pub fn default_extension_host() -> ExtensionHost {
         requested_permissions: Vec::new(),
         declared_capabilities: vec!["session.inspect".to_string()],
         declared_side_effects: vec!["none".to_string()],
-        signature: Some(ExtensionManifestSignature {
-            key_id: "forge-builtin-ed25519".to_string(),
-            algorithm: "ed25519".to_string(),
-            value: "builtin-signature-viewer-session-inspector-v1".to_string(),
-        }),
+        signature: None,
         revoked: false,
-    });
-    let _ = host.register(ExtensionManifest {
+    };
+    viewer_manifest.signature = sign_manifest_with_builtin_key(&viewer_manifest);
+    let _ = host.register(viewer_manifest);
+
+    let mut provider_manifest = ExtensionManifest {
         id: "provider-openai".to_string(),
         display_name: "OpenAI Provider Adapter".to_string(),
-        publisher: "forge-core".to_string(),
+        publisher: FORGE_BUILTIN_MANIFEST_PUBLISHER.to_string(),
         version: "1.0.0".to_string(),
         minimum_forge_version: "0.1.0".to_string(),
         package_checksum_sha256: "2222222222222222222222222222222222222222222222222222222222222222"
@@ -681,28 +869,26 @@ pub fn default_extension_host() -> ExtensionHost {
             "provider.confidential_relay".to_string(),
         ],
         declared_side_effects: vec!["network-egress".to_string()],
-        signature: Some(ExtensionManifestSignature {
-            key_id: "forge-builtin-ed25519".to_string(),
-            algorithm: "ed25519".to_string(),
-            value: "builtin-signature-provider-openai-v1".to_string(),
-        }),
+        signature: None,
         revoked: false,
-    });
+    };
+    provider_manifest.signature = sign_manifest_with_builtin_key(&provider_manifest);
+    let _ = host.register(provider_manifest);
     host
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ExtensionClass, ExtensionHost, ExtensionHostError, ExtensionManifest,
-        ExtensionManifestSignature, ExtensionPermission, ExtensionState, default_extension_host,
+        ExtensionClass, ExtensionHost, ExtensionHostError, ExtensionManifest, ExtensionPermission,
+        ExtensionState, default_extension_host,
     };
 
     fn provider_manifest() -> ExtensionManifest {
-        ExtensionManifest {
+        let mut manifest = ExtensionManifest {
             id: "provider".to_string(),
             display_name: "Provider".to_string(),
-            publisher: "forge-test".to_string(),
+            publisher: super::FORGE_BUILTIN_MANIFEST_PUBLISHER.to_string(),
             version: "1.0.0".to_string(),
             minimum_forge_version: "0.1.0".to_string(),
             package_checksum_sha256:
@@ -720,13 +906,11 @@ mod tests {
             ],
             declared_capabilities: vec!["provider.chat".to_string()],
             declared_side_effects: vec!["network-egress".to_string()],
-            signature: Some(ExtensionManifestSignature {
-                key_id: "forge-test-ed25519".to_string(),
-                algorithm: "ed25519".to_string(),
-                value: "test-signature-provider-v1".to_string(),
-            }),
+            signature: None,
             revoked: false,
-        }
+        };
+        manifest.signature = super::sign_manifest_with_builtin_key(&manifest);
+        manifest
     }
 
     #[test]
@@ -768,6 +952,53 @@ mod tests {
         let mut host = ExtensionHost::new();
         let mut manifest = provider_manifest();
         manifest.signature = None;
+        assert!(host.register(manifest).is_ok());
+        assert!(host.grant_all_permissions("provider").is_ok());
+
+        let enable = host.set_enabled("provider", true);
+        assert!(enable.is_err());
+        let error = match enable {
+            Ok(_) => return,
+            Err(value) => value,
+        };
+        assert!(matches!(
+            error,
+            ExtensionHostError::SecurityPolicyBlocked { .. }
+        ));
+    }
+
+    #[test]
+    fn enabling_manifest_with_unknown_signer_key_is_blocked() {
+        let mut host = ExtensionHost::new();
+        let mut manifest = provider_manifest();
+        let signature = manifest.signature.clone();
+        assert!(signature.is_some());
+        let mut signature = match signature {
+            Some(value) => value,
+            None => return,
+        };
+        signature.key_id = "unknown-signer".to_string();
+        manifest.signature = Some(signature);
+        assert!(host.register(manifest).is_ok());
+        assert!(host.grant_all_permissions("provider").is_ok());
+
+        let enable = host.set_enabled("provider", true);
+        assert!(enable.is_err());
+        let error = match enable {
+            Ok(_) => return,
+            Err(value) => value,
+        };
+        assert!(matches!(
+            error,
+            ExtensionHostError::SecurityPolicyBlocked { .. }
+        ));
+    }
+
+    #[test]
+    fn enabling_manifest_with_tampered_signature_payload_is_blocked() {
+        let mut host = ExtensionHost::new();
+        let mut manifest = provider_manifest();
+        manifest.display_name = "Provider (tampered)".to_string();
         assert!(host.register(manifest).is_ok());
         assert!(host.grant_all_permissions("provider").is_ok());
 
