@@ -1,5 +1,12 @@
 pub fn launch_desktop() {
     install_forge_panic_hook();
+    if let Err(error) = forge_security::process_hardening::enforce_process_dumpability_controls() {
+        log_error(
+            "startup",
+            format!("launch blocked by process hardening: {error}"),
+        );
+        return;
+    }
     log_info("startup", "launch_desktop invoked");
     let mut window_config = WindowConfig::default().title("Forge");
     if let Some(icon) = forge_window_icon() {

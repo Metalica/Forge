@@ -412,9 +412,24 @@ fn looks_destructive_keyword(value: &str) -> bool {
     .any(|token| lowered.contains(token))
 }
 
+fn looks_read_only_keyword(value: &str) -> bool {
+    let lowered = value.to_ascii_lowercase();
+    [
+        "read", "list", "get", "fetch", "query", "search", "view", "status", "describe", "inspect",
+        "health", "info",
+    ]
+    .iter()
+    .any(|token| lowered.contains(token))
+}
+
 fn policy_looks_destructive(policy: &McpToolPolicy) -> bool {
     looks_destructive_keyword(policy.tool_name.as_str())
         || looks_destructive_keyword(policy.required_scope.as_str())
+}
+
+fn policy_looks_read_only(policy: &McpToolPolicy) -> bool {
+    looks_read_only_keyword(policy.tool_name.as_str())
+        || looks_read_only_keyword(policy.required_scope.as_str())
 }
 
 fn has_granted_destructive_permission(runtime: &ExtensionRuntime) -> bool {
@@ -938,7 +953,7 @@ impl ExtensionHost {
             tool_name,
             required_scope,
             audience,
-            McpToolRiskClass::ReadOnly,
+            McpToolRiskClass::Mutating,
         )
     }
 
@@ -1131,6 +1146,27 @@ impl ExtensionHost {
         {
             return Err(McpTokenAuthorizationError::ScopeMissing {
                 required_scope: policy.required_scope.clone(),
+            });
+        }
+        let extension_has_destructive_surface = has_granted_destructive_permission(runtime)
+            || declared_destructive_side_effect(runtime);
+        if matches!(policy.risk_class, McpToolRiskClass::ReadOnly)
+            && !policy_looks_read_only(policy)
+        {
+            return Err(McpTokenAuthorizationError::DestructiveToolBlocked {
+                tool_name: policy.tool_name.clone(),
+                reason: "read-only risk class requires explicit read-only scope/tool semantics"
+                    .to_string(),
+            });
+        }
+        if extension_has_destructive_surface
+            && !matches!(policy.risk_class, McpToolRiskClass::Destructive)
+            && !policy_looks_read_only(policy)
+        {
+            return Err(McpTokenAuthorizationError::DestructiveToolBlocked {
+                tool_name: policy.tool_name.clone(),
+                reason: "extension has destructive surface; ambiguous tool policies must use destructive risk class"
+                    .to_string(),
             });
         }
         if policy_looks_destructive(policy)
@@ -1687,6 +1723,53 @@ mod tests {
         };
         manifest.signature = sign_manifest_for_tests(&manifest);
         manifest
+    }
+
+    fn overbroad_ambiguous_manifest() -> ExtensionManifest {
+        let mut manifest = ExtensionManifest {
+            id: "overbroad-ambiguous-tool".to_string(),
+            display_name: "Overbroad Ambiguous Tool".to_string(),
+            publisher: TEST_MANIFEST_PUBLISHER.to_string(),
+            version: "1.0.0".to_string(),
+            minimum_forge_version: "0.1.0".to_string(),
+            package_checksum_sha256:
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd".to_string(),
+            class: ExtensionClass::Tool,
+            idle_cost_mb: 18,
+            startup_cost_ms: 55,
+            memory_budget_mb: 128,
+            cpu_budget_percent: 20,
+            requires_network: true,
+            background_activity: "tool execution".to_string(),
+            requested_permissions: vec![
+                ExtensionPermission::Shell,
+                ExtensionPermission::Network,
+                ExtensionPermission::FilesystemEdits,
+            ],
+            declared_capabilities: vec!["tool.task".to_string()],
+            declared_side_effects: vec![
+                "filesystem-write".to_string(),
+                "network-egress".to_string(),
+            ],
+            signature: None,
+            revoked: false,
+        };
+        manifest.signature = sign_manifest_for_tests(&manifest);
+        manifest
+    }
+
+    #[test]
+    fn set_mcp_tool_policy_defaults_risk_class_to_mutating() {
+        let mut host = ExtensionHost::new();
+        let configured = host.set_mcp_tool_policy("health.status", "health.status", "mcp://tools");
+        assert!(configured.is_ok());
+        let policy = host.mcp_tool_policy("health.status");
+        assert!(policy.is_some());
+        let policy = match policy {
+            Some(value) => value,
+            None => return,
+        };
+        assert!(matches!(policy.risk_class, McpToolRiskClass::Mutating));
     }
 
     #[test]
@@ -2296,6 +2379,56 @@ mod tests {
             issued.token.as_str(),
             "health.status",
             "mcp://tools/exec",
+            1_100,
+        );
+        assert!(denied.is_err());
+        let denied = match denied {
+            Ok(_) => return,
+            Err(value) => value,
+        };
+        assert!(matches!(
+            denied,
+            super::McpTokenAuthorizationError::DestructiveToolBlocked { .. }
+        ));
+    }
+
+    #[test]
+    fn ambiguous_tool_scope_on_destructive_extension_requires_explicit_destructive_risk() {
+        let mut host = ExtensionHost::new();
+        register_test_manifest_signer(&mut host);
+        assert!(host.register(overbroad_ambiguous_manifest()).is_ok());
+        assert!(
+            host.grant_all_permissions("overbroad-ambiguous-tool")
+                .is_ok()
+        );
+        assert!(
+            host.set_overbroad_approved("overbroad-ambiguous-tool", true)
+                .is_ok()
+        );
+        assert!(host.set_enabled("overbroad-ambiguous-tool", true).is_ok());
+        assert!(
+            host.set_mcp_tool_policy("ops.task", "tool.task", "mcp://tools/task")
+                .is_ok()
+        );
+
+        let issued = host.issue_mcp_scoped_token(
+            "overbroad-ambiguous-tool",
+            "session-danger-ambiguous",
+            "mcp://tools/task",
+            vec!["tool.task".to_string()],
+            10_000,
+            1_000,
+        );
+        assert!(issued.is_ok());
+        let issued = match issued {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+
+        let denied = host.authorize_mcp_tool_call(
+            issued.token.as_str(),
+            "ops.task",
+            "mcp://tools/task",
             1_100,
         );
         assert!(denied.is_err());

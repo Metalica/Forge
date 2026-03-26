@@ -13,6 +13,7 @@ workspace = true
 control_plane = { path = "../control_plane" }
 execution_plane = { path = "../execution_plane" }
 runtime_registry = { path = "../runtime_registry" }
+forge_security = { path = "../forge_security" }
 urm = { path = "../urm" }
 floem = { version = "0.2.0", default-features = false, features = ["vger"] }
 serde = { version = "1.0", features = ["derive"] }

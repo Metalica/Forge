@@ -32,11 +32,11 @@ pub fn validate_secret_free_command_line(
             "launch request rejected: program contains secret-like material",
         ));
     }
-    for arg in args {
+    for (index, arg) in args.iter().enumerate() {
         if looks_like_secret_cli_arg(arg) {
             return Err(CommandGuardError::new(format!(
-                "launch request rejected: command-line argument appears to carry secret material ({})",
-                clip_for_error(arg)
+                "launch request rejected: command-line argument at position {} appears to carry secret material",
+                index + 1
             )));
         }
     }
@@ -49,16 +49,14 @@ pub fn validate_secret_free_environment(env: &[(String, String)]) -> Result<(), 
             continue;
         }
         if looks_like_sensitive_env_key(key) && !value.trim().is_empty() {
-            return Err(CommandGuardError::new(format!(
-                "launch request rejected: environment key {} carries secret material",
-                clip_for_error(key)
-            )));
+            return Err(CommandGuardError::new(
+                "launch request rejected: sensitive environment key carries secret material",
+            ));
         }
         if looks_like_secret_value(value) {
-            return Err(CommandGuardError::new(format!(
-                "launch request rejected: environment value for key {} appears to contain secret material",
-                clip_for_error(key)
-            )));
+            return Err(CommandGuardError::new(
+                "launch request rejected: environment value appears to contain secret material",
+            ));
         }
     }
     Ok(())
@@ -128,15 +126,6 @@ fn looks_like_secret_value(value: &str) -> bool {
     lower.starts_with("sk-") || lower.starts_with("bearer ")
 }
 
-fn clip_for_error(value: &str) -> String {
-    let trimmed = value.trim();
-    if trimmed.chars().count() <= 24 {
-        return trimmed.to_string();
-    }
-    let prefix: String = trimmed.chars().take(24).collect();
-    format!("{prefix}...")
-}
-
 #[cfg(test)]
 mod tests {
     use crate::broker::{render_secret_env_reference, with_global_secret_broker};
@@ -150,6 +139,13 @@ mod tests {
             &[String::from("--api-key=sk-live-secret-value")],
         );
         assert!(result.is_err());
+        let result = match result {
+            Ok(_) => return,
+            Err(value) => value,
+        };
+        let rendered = result.to_string();
+        assert!(!rendered.contains("sk-live-secret-value"));
+        assert!(!rendered.contains("api-key"));
     }
 
     #[test]
@@ -182,6 +178,13 @@ mod tests {
             String::from("sk-live-secret-value"),
         )]);
         assert!(result.is_err());
+        let result = match result {
+            Ok(_) => return,
+            Err(value) => value,
+        };
+        let rendered = result.to_string();
+        assert!(!rendered.contains("OPENAI_API_KEY"));
+        assert!(!rendered.contains("sk-live-secret-value"));
     }
 
     #[test]

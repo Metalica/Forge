@@ -759,6 +759,7 @@ pub mod process {
     use forge_security::command_guard::{
         validate_secret_free_command_line, validate_secret_free_environment,
     };
+    use forge_security::process_hardening::enforce_process_dumpability_controls;
     use std::collections::HashMap;
     use std::error::Error;
     use std::fmt;
@@ -1459,6 +1460,15 @@ pub mod process {
         ) -> StartResult {
             let runtime_id = runtime_id.into();
             let process = self.processes.entry(runtime_id.clone()).or_default();
+
+            if let Err(error) = enforce_process_dumpability_controls() {
+                Self::cleanup_process_temp_dir(process);
+                process.child = None;
+                process.started_at = None;
+                process.last_error = Some(format!("process hardening failed: {error}"));
+                process.health_probe = request.health_probe.clone();
+                return StartResult::LaunchFailed;
+            }
 
             if let Err(error) = request.validate() {
                 Self::cleanup_process_temp_dir(process);
