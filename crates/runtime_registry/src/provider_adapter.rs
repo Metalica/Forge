@@ -4,6 +4,7 @@ use crate::confidential_relay::{
     allow_insecure_localhost_http_endpoint, build_confidential_session_id,
     build_confidential_session_key_id, verify_attestation,
 };
+use crate::local_api_hardening::guard_and_audit_provider_route;
 use crate::openjarvis_bridge::{
     OpenJarvisBridgeModeAConfig, OpenJarvisChatCompletionRequest,
     run_openjarvis_mode_a_chat_completion,
@@ -276,7 +277,7 @@ pub fn run_chat_task_with_source(
         return Err(format!("source {} is disabled for chat routing", source.id));
     }
 
-    match source.kind {
+    guard_and_audit_provider_route(source, "chat", || match source.kind {
         SourceKind::LocalModel => Err(format!(
             "local source {} should be handled through runtime process path",
             source.id
@@ -294,7 +295,7 @@ pub fn run_chat_task_with_source(
                 ))
             }
         }
-    }
+    })
 }
 
 pub fn run_confidential_chat_task_with_source(
@@ -433,7 +434,7 @@ pub fn run_role_task_with_source(
         ));
     }
 
-    match source.kind {
+    guard_and_audit_provider_route(source, role.label(), || match source.kind {
         SourceKind::LocalModel => Err(format!(
             "local source {} should be handled through runtime process path",
             source.id
@@ -462,7 +463,7 @@ pub fn run_role_task_with_source(
                 ))
             }
         }
-    }
+    })
 }
 
 fn resolve_codex_specialist_sources(source_registry: &SourceRegistry) -> Vec<SourceEntry> {
@@ -499,7 +500,7 @@ fn execute_codex_specialist_with_source(
         ));
     }
 
-    match source.kind {
+    guard_and_audit_provider_route(source, "codex_specialist", || match source.kind {
         SourceKind::SidecarBridge => {
             if looks_like_mode_b(source) {
                 execute_mode_b(source, request)
@@ -528,7 +529,7 @@ fn execute_codex_specialist_with_source(
             "local source {} is not a codex specialist provider adapter target",
             source.id
         )),
-    }
+    })
 }
 
 fn execute_mode_b(
@@ -1126,6 +1127,10 @@ mod tests {
         ConfidentialRelayMode, ConfidentialRelayPolicy, ConfidentialRelaySessionRecord,
         ConfidentialRelaySessionStore, RelayEncryptionMode,
     };
+    use crate::local_api_hardening::{
+        ProviderAdapterAuditDecision, ProviderAdapterRouteClass,
+        latest_provider_adapter_audit_events,
+    };
     use crate::source_registry::{SourceEntry, SourceKind, SourceRegistry, SourceRole};
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -1390,6 +1395,133 @@ mod tests {
 
         let join_result = handle.join();
         assert!(join_result.is_ok());
+    }
+
+    #[test]
+    fn local_api_hardening_blocks_direct_db_surface_routes() {
+        let source = SourceEntry {
+            id: "mode-b-lmdb-attempt".to_string(),
+            display_name: "Mode B LMDB Attempt".to_string(),
+            kind: SourceKind::SidecarBridge,
+            target: "http://127.0.0.1:8100/forge/bridge/v1/task?op=lmdb_read".to_string(),
+            enabled: true,
+            eligible_roles: vec![SourceRole::Chat],
+            default_roles: vec![SourceRole::Chat],
+            confidential_endpoint: None,
+        };
+        let request = ChatTaskRequest::new("probe local db route", 32);
+        assert!(request.is_ok());
+        let request = match request {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        let result = run_chat_task_with_source(&source, &request);
+        assert!(result.is_err());
+        let error = match result {
+            Ok(_) => return,
+            Err(value) => value,
+        };
+        assert!(error.contains("direct db/secret read surfaces are blocked"));
+    }
+
+    #[test]
+    fn local_api_hardening_blocks_policy_and_telemetry_bypass_routes() {
+        let source = SourceEntry {
+            id: "mode-b-policy-bypass-attempt".to_string(),
+            display_name: "Mode B Policy Bypass Attempt".to_string(),
+            kind: SourceKind::SidecarBridge,
+            target: "http://127.0.0.1:8100/forge/bridge/v1/task/admin/policy".to_string(),
+            enabled: true,
+            eligible_roles: vec![SourceRole::Chat],
+            default_roles: vec![SourceRole::Chat],
+            confidential_endpoint: None,
+        };
+        let request = ChatTaskRequest::new("probe policy bypass", 32);
+        assert!(request.is_ok());
+        let request = match request {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        let result = run_chat_task_with_source(&source, &request);
+        assert!(result.is_err());
+        let error = match result {
+            Ok(_) => return,
+            Err(value) => value,
+        };
+        assert!(error.contains("policy/telemetry bypass route is not allowed"));
+    }
+
+    #[test]
+    fn provider_adapter_audit_records_provenance_for_local_and_remote_routes() {
+        let local_source = SourceEntry {
+            id: "audit-local-hardening".to_string(),
+            display_name: "Audit Local".to_string(),
+            kind: SourceKind::SidecarBridge,
+            target: "http://127.0.0.1:8100/forge/bridge/v1/task?op=lmdb_read".to_string(),
+            enabled: true,
+            eligible_roles: vec![SourceRole::Chat],
+            default_roles: vec![SourceRole::Chat],
+            confidential_endpoint: None,
+        };
+        let remote_source = SourceEntry {
+            id: "audit-remote-hardening".to_string(),
+            display_name: "Audit Remote".to_string(),
+            kind: SourceKind::ApiModel,
+            target: "http://api.openai.com/v1".to_string(),
+            enabled: true,
+            eligible_roles: vec![SourceRole::Chat],
+            default_roles: vec![SourceRole::Chat],
+            confidential_endpoint: None,
+        };
+        let request = ChatTaskRequest::new("audit parity", 32);
+        assert!(request.is_ok());
+        let request = match request {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        let _ = run_chat_task_with_source(&local_source, &request);
+        let _ = run_chat_task_with_source(&remote_source, &request);
+
+        let events = latest_provider_adapter_audit_events(256);
+        let local_event = events
+            .iter()
+            .rev()
+            .find(|event| event.source_id == "audit-local-hardening");
+        assert!(local_event.is_some());
+        let local_event = match local_event {
+            Some(value) => value,
+            None => return,
+        };
+        assert!(matches!(
+            local_event.route_class,
+            ProviderAdapterRouteClass::LocalBridge
+        ));
+        assert_eq!(local_event.decision, ProviderAdapterAuditDecision::Denied);
+        assert_eq!(
+            local_event.trust_label,
+            "trusted.local.api.bridge.policy_enforced"
+        );
+        assert!(local_event.provenance.starts_with("local-api://"));
+
+        let remote_event = events
+            .iter()
+            .rev()
+            .find(|event| event.source_id == "audit-remote-hardening");
+        assert!(remote_event.is_some());
+        let remote_event = match remote_event {
+            Some(value) => value,
+            None => return,
+        };
+        assert!(matches!(
+            remote_event.route_class,
+            ProviderAdapterRouteClass::RemoteApi
+        ));
+        assert_eq!(remote_event.decision, ProviderAdapterAuditDecision::Denied);
+        assert_eq!(
+            remote_event.trust_label,
+            "trusted.remote.api.provider.policy_enforced"
+        );
+        assert!(remote_event.provenance.starts_with("remote-api://"));
     }
 
     #[test]
