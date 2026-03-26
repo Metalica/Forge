@@ -2,6 +2,8 @@ use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
+#[cfg(unix)]
+use nix::sys::mman::{mlock, munlock};
 use rand::RngCore;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
@@ -110,6 +112,7 @@ impl ResolvedSecret {
 struct SecretRecord {
     label: String,
     secret_bytes: Vec<u8>,
+    memory_locked: bool,
     created_at_unix_ms: u64,
     updated_at_unix_ms: u64,
     access_count: u64,
@@ -337,10 +340,13 @@ impl SecretBroker {
             self.allocate_handle_suffix()
         ));
         let label_for_audit = label.clone();
+        let mut secret_bytes = secret.into_bytes();
+        let memory_locked = try_lock_secret_bytes(secret_bytes.as_mut_slice());
 
         let record = SecretRecord {
             label,
-            secret_bytes: secret.into_bytes(),
+            secret_bytes,
+            memory_locked,
             created_at_unix_ms: now_unix_ms,
             updated_at_unix_ms: now_unix_ms,
             access_count: 0,
@@ -474,12 +480,21 @@ impl SecretBroker {
         let label_for_audit = record.label.clone();
         let (action, detail) = match replacement_secret {
             Some(secret) => {
+                if record.memory_locked {
+                    let _ = try_unlock_secret_bytes(record.secret_bytes.as_mut_slice());
+                }
                 clear_bytes(&mut record.secret_bytes);
-                record.secret_bytes = secret.into_bytes();
+                let mut next_secret = secret.into_bytes();
+                record.memory_locked = try_lock_secret_bytes(next_secret.as_mut_slice());
+                record.secret_bytes = next_secret;
                 record.revoked = false;
                 (SecretAuditAction::RotateSecret, "secret rotated")
             }
             None => {
+                if record.memory_locked {
+                    let _ = try_unlock_secret_bytes(record.secret_bytes.as_mut_slice());
+                    record.memory_locked = false;
+                }
                 clear_bytes(&mut record.secret_bytes);
                 record.secret_bytes.clear();
                 record.revoked = true;
@@ -607,6 +622,19 @@ impl SecretBroker {
         if self.audit_events.len() > MAX_AUDIT_EVENTS {
             let overflow = self.audit_events.len().saturating_sub(MAX_AUDIT_EVENTS);
             self.audit_events.drain(0..overflow);
+        }
+    }
+}
+
+impl Drop for SecretBroker {
+    fn drop(&mut self) {
+        for record in self.records.values_mut() {
+            if record.memory_locked {
+                let _ = try_unlock_secret_bytes(record.secret_bytes.as_mut_slice());
+                record.memory_locked = false;
+            }
+            clear_bytes(record.secret_bytes.as_mut_slice());
+            record.secret_bytes.clear();
         }
     }
 }
@@ -766,6 +794,7 @@ fn from_persisted_store(
             let probe_record = SecretRecord {
                 label: entry.label.clone(),
                 secret_bytes: Vec::new(),
+                memory_locked: false,
                 created_at_unix_ms: entry.created_at_unix_ms,
                 updated_at_unix_ms: entry.updated_at_unix_ms,
                 access_count: entry.access_count,
@@ -788,12 +817,14 @@ fn from_persisted_store(
             clear_bytes(&mut dek);
             secret_bytes = plaintext;
         }
+        let memory_locked = try_lock_secret_bytes(secret_bytes.as_mut_slice());
 
         records.insert(
             handle,
             SecretRecord {
                 label: entry.label,
                 secret_bytes,
+                memory_locked,
                 created_at_unix_ms: entry.created_at_unix_ms,
                 updated_at_unix_ms: entry.updated_at_unix_ms,
                 access_count: entry.access_count,
@@ -868,6 +899,36 @@ fn extract_handle_suffix(handle: &str) -> Option<u64> {
 fn clear_bytes(bytes: &mut [u8]) {
     for item in bytes {
         *item = 0;
+    }
+}
+
+fn try_lock_secret_bytes(bytes: &mut [u8]) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        return mlock(bytes).is_ok();
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = bytes;
+        false
+    }
+}
+
+fn try_unlock_secret_bytes(bytes: &mut [u8]) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        return munlock(bytes).is_ok();
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = bytes;
+        false
     }
 }
 
@@ -1312,5 +1373,29 @@ mod tests {
         assert!(!contents.contains("sk-live-plain-secret-12345"));
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn revoke_clears_secret_bytes_and_releases_lock_state() {
+        let mut broker = SecretBroker::new();
+        let handle = broker.store_secret("OPENAI_API_KEY", "sk-clear-me");
+        assert!(handle.is_ok());
+        let handle = match handle {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+
+        let revoked = broker.rotate_or_revoke_secret(&handle, None);
+        assert!(revoked.is_ok());
+
+        let record = broker.records.get(&handle);
+        assert!(record.is_some());
+        let record = match record {
+            Some(value) => value,
+            None => return,
+        };
+        assert!(record.secret_bytes.is_empty());
+        assert!(record.revoked);
+        assert!(!record.memory_locked);
     }
 }
