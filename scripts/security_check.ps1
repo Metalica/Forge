@@ -7,6 +7,8 @@ $PSNativeCommandUseErrorActionPreference = $true
 
 & "$PSScriptRoot\bootstrap_env.ps1"
 & "$PSScriptRoot\process_cmdline_secret_scan.ps1"
+& "$PSScriptRoot\coredump_profile_scan.ps1"
+& "$PSScriptRoot\broker_audit_export_check.ps1"
 
 function Invoke-Checked {
     param(

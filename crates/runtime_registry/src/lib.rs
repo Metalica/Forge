@@ -1340,6 +1340,43 @@ pub mod process {
             Self::default()
         }
 
+        fn minimal_inherited_environment() -> Vec<(String, String)> {
+            Self::build_minimal_inherited_environment(std::env::vars())
+        }
+
+        fn build_minimal_inherited_environment<I>(variables: I) -> Vec<(String, String)>
+        where
+            I: IntoIterator<Item = (String, String)>,
+        {
+            variables
+                .into_iter()
+                .filter(|(key, _)| Self::is_minimal_inherited_env_key(key))
+                .collect()
+        }
+
+        fn is_minimal_inherited_env_key(key: &str) -> bool {
+            if cfg!(windows) {
+                let normalized = key.to_ascii_uppercase();
+                matches!(
+                    normalized.as_str(),
+                    "PATH" | "SYSTEMROOT" | "WINDIR" | "COMSPEC" | "PATHEXT" | "TEMP" | "TMP"
+                )
+            } else {
+                matches!(
+                    key,
+                    "PATH"
+                        | "HOME"
+                        | "USER"
+                        | "LOGNAME"
+                        | "LANG"
+                        | "LC_ALL"
+                        | "LC_CTYPE"
+                        | "TERM"
+                        | "TMPDIR"
+                )
+            }
+        }
+
         pub fn start(
             &mut self,
             runtime_id: impl Into<String>,
@@ -1374,6 +1411,10 @@ pub mod process {
             command.args(&request.args);
             if let Some(working_dir) = &request.working_dir {
                 command.current_dir(working_dir);
+            }
+            command.env_clear();
+            for (key, value) in Self::minimal_inherited_environment() {
+                command.env(key, value);
             }
             let mut stdin_secret_env = Vec::new();
             for (key, value) in &request.env {
@@ -1442,33 +1483,41 @@ pub mod process {
                     "runtime secret injection failed: child stdin is unavailable",
                 )
             })?;
-            let payload = Self::render_secret_stdin_payload(secret_env)
+            let mut payload = Self::render_secret_stdin_payload(secret_env)
                 .map_err(RuntimeProcessValidationError::new)?;
-            stdin.write_all(payload.as_bytes()).map_err(|error| {
-                RuntimeProcessValidationError::new(format!(
+            if let Err(error) = stdin.write_all(payload.as_slice()) {
+                Self::clear_sensitive_bytes(&mut payload);
+                return Err(RuntimeProcessValidationError::new(format!(
                     "runtime secret injection failed while writing stdin payload: {error}"
-                ))
-            })?;
-            stdin.flush().map_err(|error| {
-                RuntimeProcessValidationError::new(format!(
+                )));
+            }
+            if let Err(error) = stdin.flush() {
+                Self::clear_sensitive_bytes(&mut payload);
+                return Err(RuntimeProcessValidationError::new(format!(
                     "runtime secret injection failed while flushing stdin payload: {error}"
-                ))
-            })?;
+                )));
+            }
+            Self::clear_sensitive_bytes(&mut payload);
             Ok(())
         }
 
-        fn render_secret_stdin_payload(secret_env: &[(String, String)]) -> Result<String, String> {
+        fn render_secret_stdin_payload(secret_env: &[(String, String)]) -> Result<Vec<u8>, String> {
             let entries = secret_env
                 .iter()
                 .map(|(key, value)| serde_json::json!({ "key": key, "value": value }))
                 .collect::<Vec<_>>();
-            let mut payload = serde_json::to_string(&serde_json::json!({
+            let mut payload = serde_json::to_vec(&serde_json::json!({
                 "forge_secret_env": entries,
                 "delivery": "stdin-once"
             }))
             .map_err(|error| format!("runtime secret payload serialization failed: {error}"))?;
-            payload.push('\n');
+            payload.push(b'\n');
             Ok(payload)
+        }
+
+        fn clear_sensitive_bytes(bytes: &mut Vec<u8>) {
+            bytes.fill(0);
+            bytes.clear();
         }
 
         pub fn stop(&mut self, runtime_id: &str) -> StopResult {
@@ -1656,6 +1705,7 @@ pub mod process {
             run_llama_cpp_completion_with_timeout,
         };
         use forge_security::broker::{render_secret_env_reference, with_global_secret_broker};
+        use std::collections::HashMap;
         use std::fs;
         use std::io::{Read, Write};
         use std::net::TcpListener;
@@ -2170,6 +2220,30 @@ pub mod process {
         }
 
         #[test]
+        fn render_secret_stdin_payload_serializes_expected_json_envelope() {
+            let payload = RuntimeProcessManager::render_secret_stdin_payload(&[(
+                "OPENAI_API_KEY".to_string(),
+                "sk-live-secret".to_string(),
+            )]);
+            assert!(payload.is_ok());
+            let payload = match payload {
+                Ok(value) => value,
+                Err(_) => return,
+            };
+
+            assert_eq!(payload.last(), Some(&b'\n'));
+            let payload_text = String::from_utf8(payload);
+            assert!(payload_text.is_ok());
+            let payload_text = match payload_text {
+                Ok(value) => value,
+                Err(_) => return,
+            };
+            assert!(payload_text.contains("\"delivery\":\"stdin-once\""));
+            assert!(payload_text.contains("\"key\":\"OPENAI_API_KEY\""));
+            assert!(payload_text.contains("\"value\":\"sk-live-secret\""));
+        }
+
+        #[test]
         fn launch_request_with_unknown_secret_handle_reference_is_rejected() {
             let mut manager = RuntimeProcessManager::new();
             let mut request = RuntimeLaunchRequest::new("powershell");
@@ -2185,6 +2259,40 @@ pub mod process {
 
             let result = manager.start("llama.cpp", &request);
             assert_eq!(result, StartResult::LaunchFailed);
+        }
+
+        #[cfg(windows)]
+        #[test]
+        fn minimal_inherited_environment_windows_allowlist_is_case_insensitive() {
+            let filtered = RuntimeProcessManager::build_minimal_inherited_environment(vec![
+                ("Path".to_string(), "C:\\Windows\\System32".to_string()),
+                ("systemroot".to_string(), "C:\\Windows".to_string()),
+                ("OPENAI_API_KEY".to_string(), "sk-live-secret".to_string()),
+                ("FORGE_CUSTOM_ENV".to_string(), "1".to_string()),
+            ]);
+            let map: HashMap<String, String> = filtered.into_iter().collect();
+
+            assert!(map.contains_key("Path"));
+            assert!(map.contains_key("systemroot"));
+            assert!(!map.contains_key("OPENAI_API_KEY"));
+            assert!(!map.contains_key("FORGE_CUSTOM_ENV"));
+        }
+
+        #[cfg(not(windows))]
+        #[test]
+        fn minimal_inherited_environment_unix_allowlist_excludes_custom_keys() {
+            let filtered = RuntimeProcessManager::build_minimal_inherited_environment(vec![
+                ("PATH".to_string(), "/usr/bin".to_string()),
+                ("HOME".to_string(), "/tmp/test-home".to_string()),
+                ("OPENAI_API_KEY".to_string(), "sk-live-secret".to_string()),
+                ("FORGE_CUSTOM_ENV".to_string(), "1".to_string()),
+            ]);
+            let map: HashMap<String, String> = filtered.into_iter().collect();
+
+            assert!(map.contains_key("PATH"));
+            assert!(map.contains_key("HOME"));
+            assert!(!map.contains_key("OPENAI_API_KEY"));
+            assert!(!map.contains_key("FORGE_CUSTOM_ENV"));
         }
     }
 }

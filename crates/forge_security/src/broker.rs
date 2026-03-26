@@ -14,8 +14,10 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const BROKER_PERSISTED_SCHEMA_VERSION: u32 = 1;
+const BROKER_AUDIT_SCHEMA_VERSION: u32 = 1;
 const BROKER_KEY_WRAP_AAD: &[u8] = b"forge-security-broker-key-wrap-v1";
 const SECRET_ENV_REFERENCE_PREFIX: &str = "forge-secret-handle://";
+const MAX_AUDIT_EVENTS: usize = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecretBrokerError {
@@ -112,6 +114,37 @@ struct SecretRecord {
     updated_at_unix_ms: u64,
     access_count: u64,
     revoked: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SecretAuditAction {
+    StoreSecret,
+    ResolveSecretHandle,
+    InjectSecret,
+    RotateSecret,
+    RevokeSecret,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SecretAuditDecision {
+    Allowed,
+    Denied,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecretAuditEvent {
+    pub action: SecretAuditAction,
+    pub decision: SecretAuditDecision,
+    pub at_unix_ms: u64,
+    pub handle: Option<String>,
+    pub label: Option<String>,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PersistedSecretAuditLog {
+    schema_version: u32,
+    events: Vec<SecretAuditEvent>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -258,6 +291,7 @@ impl KekAdapter for EnvAesKekAdapter {
 pub struct SecretBroker {
     records: HashMap<SecretHandle, SecretRecord>,
     next_id: u64,
+    audit_events: Vec<SecretAuditEvent>,
 }
 
 impl SecretBroker {
@@ -272,12 +306,28 @@ impl SecretBroker {
     ) -> Result<SecretHandle, SecretBrokerError> {
         let label = label.into();
         if label.trim().is_empty() {
-            return Err(SecretBrokerError::new("secret label cannot be empty"));
+            let error = SecretBrokerError::new("secret label cannot be empty");
+            self.record_audit_event(
+                SecretAuditAction::StoreSecret,
+                SecretAuditDecision::Denied,
+                None,
+                None,
+                error.to_string(),
+            );
+            return Err(error);
         }
 
         let secret = secret.into();
         if secret.trim().is_empty() {
-            return Err(SecretBrokerError::new("secret value cannot be empty"));
+            let error = SecretBrokerError::new("secret value cannot be empty");
+            self.record_audit_event(
+                SecretAuditAction::StoreSecret,
+                SecretAuditDecision::Denied,
+                None,
+                Some(label.as_str()),
+                error.to_string(),
+            );
+            return Err(error);
         }
 
         let now_unix_ms = now_unix_ms();
@@ -286,6 +336,7 @@ impl SecretBroker {
             now_unix_ms,
             self.allocate_handle_suffix()
         ));
+        let label_for_audit = label.clone();
 
         let record = SecretRecord {
             label,
@@ -296,6 +347,13 @@ impl SecretBroker {
             revoked: false,
         };
         self.records.insert(handle.clone(), record);
+        self.record_audit_event(
+            SecretAuditAction::StoreSecret,
+            SecretAuditDecision::Allowed,
+            Some(handle.as_str()),
+            Some(label_for_audit.as_str()),
+            "secret stored",
+        );
         Ok(handle)
     }
 
@@ -303,14 +361,36 @@ impl SecretBroker {
         &mut self,
         handle: &SecretHandle,
     ) -> Result<ResolvedSecret, SecretBrokerError> {
-        let record = self.lookup_active_record_mut(handle)?;
-        record.access_count = record.access_count.saturating_add(1);
-        record.updated_at_unix_ms = now_unix_ms();
-        let value = String::from_utf8(record.secret_bytes.clone())
-            .map_err(|_| SecretBrokerError::new("secret bytes are not valid UTF-8"))?;
+        let (label, value) = {
+            let record = match self.lookup_active_record_mut(handle) {
+                Ok(record) => record,
+                Err(error) => {
+                    self.record_audit_event(
+                        SecretAuditAction::ResolveSecretHandle,
+                        SecretAuditDecision::Denied,
+                        Some(handle.as_str()),
+                        None,
+                        error.to_string(),
+                    );
+                    return Err(error);
+                }
+            };
+            record.access_count = record.access_count.saturating_add(1);
+            record.updated_at_unix_ms = now_unix_ms();
+            let value = String::from_utf8(record.secret_bytes.clone())
+                .map_err(|_| SecretBrokerError::new("secret bytes are not valid UTF-8"))?;
+            (record.label.clone(), value)
+        };
+        self.record_audit_event(
+            SecretAuditAction::ResolveSecretHandle,
+            SecretAuditDecision::Allowed,
+            Some(handle.as_str()),
+            Some(label.as_str()),
+            "secret resolved",
+        );
         Ok(ResolvedSecret {
             handle: handle.clone(),
-            label: record.label.clone(),
+            label,
             value,
         })
     }
@@ -320,13 +400,32 @@ impl SecretBroker {
         handle: &SecretHandle,
         target: SecretInjectionTarget,
     ) -> Result<String, SecretBrokerError> {
-        let resolved = self.resolve_secret_handle(handle)?;
+        let resolved = match self.resolve_secret_handle(handle) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                self.record_audit_event(
+                    SecretAuditAction::InjectSecret,
+                    SecretAuditDecision::Denied,
+                    Some(handle.as_str()),
+                    None,
+                    error.to_string(),
+                );
+                return Err(error);
+            }
+        };
         let rendered = match target {
             SecretInjectionTarget::HttpAuthorizationBearer => {
                 format!("Bearer {}", resolved.expose())
             }
             SecretInjectionTarget::Raw => resolved.expose().to_string(),
         };
+        self.record_audit_event(
+            SecretAuditAction::InjectSecret,
+            SecretAuditDecision::Allowed,
+            Some(handle.as_str()),
+            Some(resolved.label.as_str()),
+            "secret injected",
+        );
         Ok(rendered)
     }
 
@@ -335,28 +434,91 @@ impl SecretBroker {
         handle: &SecretHandle,
         replacement_secret: Option<String>,
     ) -> Result<(), SecretBrokerError> {
-        let record = self
+        if let Some(secret) = replacement_secret.as_deref()
+            && secret.trim().is_empty()
+        {
+            let error = SecretBrokerError::new("replacement secret cannot be empty");
+            self.record_audit_event(
+                SecretAuditAction::RotateSecret,
+                SecretAuditDecision::Denied,
+                Some(handle.as_str()),
+                None,
+                error.to_string(),
+            );
+            return Err(error);
+        }
+
+        let record = match self
             .records
             .get_mut(handle)
-            .ok_or_else(|| SecretBrokerError::new("unknown secret handle"))?;
+            .ok_or_else(|| SecretBrokerError::new("unknown secret handle"))
+        {
+            Ok(record) => record,
+            Err(error) => {
+                let action = if replacement_secret.is_some() {
+                    SecretAuditAction::RotateSecret
+                } else {
+                    SecretAuditAction::RevokeSecret
+                };
+                self.record_audit_event(
+                    action,
+                    SecretAuditDecision::Denied,
+                    Some(handle.as_str()),
+                    None,
+                    error.to_string(),
+                );
+                return Err(error);
+            }
+        };
 
-        match replacement_secret {
+        let label_for_audit = record.label.clone();
+        let (action, detail) = match replacement_secret {
             Some(secret) => {
-                if secret.trim().is_empty() {
-                    return Err(SecretBrokerError::new("replacement secret cannot be empty"));
-                }
                 clear_bytes(&mut record.secret_bytes);
                 record.secret_bytes = secret.into_bytes();
                 record.revoked = false;
+                (SecretAuditAction::RotateSecret, "secret rotated")
             }
             None => {
                 clear_bytes(&mut record.secret_bytes);
                 record.secret_bytes.clear();
                 record.revoked = true;
+                (SecretAuditAction::RevokeSecret, "secret revoked")
             }
-        }
+        };
         record.updated_at_unix_ms = now_unix_ms();
+        self.record_audit_event(
+            action,
+            SecretAuditDecision::Allowed,
+            Some(handle.as_str()),
+            Some(label_for_audit.as_str()),
+            detail,
+        );
         Ok(())
+    }
+
+    pub fn latest_audit_events(&self, limit: usize) -> Vec<SecretAuditEvent> {
+        if limit == 0 || self.audit_events.is_empty() {
+            return Vec::new();
+        }
+        let start = self.audit_events.len().saturating_sub(limit);
+        self.audit_events[start..].to_vec()
+    }
+
+    pub fn save_redacted_audit_events_to_path(&self, path: &Path) -> Result<(), SecretBrokerError> {
+        let payload = PersistedSecretAuditLog {
+            schema_version: BROKER_AUDIT_SCHEMA_VERSION,
+            events: self.audit_events.clone(),
+        };
+        let encoded = serde_json::to_string_pretty(&payload).map_err(|error| {
+            SecretBrokerError::new(format!("broker audit serialization failed: {error}"))
+        })?;
+        fs::write(path, encoded).map_err(|error| {
+            SecretBrokerError::new(format!(
+                "broker audit write failed at {}: {error}",
+                path.display()
+            ))
+        })
     }
 
     pub fn save_encrypted_to_path(
@@ -424,6 +586,29 @@ impl SecretBroker {
         self.next_id = self.next_id.saturating_add(1);
         self.next_id
     }
+
+    fn record_audit_event(
+        &mut self,
+        action: SecretAuditAction,
+        decision: SecretAuditDecision,
+        handle: Option<&str>,
+        label: Option<&str>,
+        detail: impl Into<String>,
+    ) {
+        let event = SecretAuditEvent {
+            action,
+            decision,
+            at_unix_ms: now_unix_ms(),
+            handle: handle.map(redact_sensitive_text),
+            label: label.map(redact_sensitive_text),
+            detail: redact_sensitive_text(detail.into()),
+        };
+        self.audit_events.push(event);
+        if self.audit_events.len() > MAX_AUDIT_EVENTS {
+            let overflow = self.audit_events.len().saturating_sub(MAX_AUDIT_EVENTS);
+            self.audit_events.drain(0..overflow);
+        }
+    }
 }
 
 static GLOBAL_SECRET_BROKER: OnceLock<Mutex<SecretBroker>> = OnceLock::new();
@@ -464,6 +649,10 @@ pub fn rotate_encrypted_store_kek(
             Ok(())
         }
     }
+}
+
+pub fn save_global_redacted_audit_events_to_path(path: &Path) -> Result<(), SecretBrokerError> {
+    with_global_secret_broker(|broker| broker.save_redacted_audit_events_to_path(path))
 }
 
 fn build_rewrap_temp_path(path: &Path) -> PathBuf {
@@ -616,6 +805,7 @@ fn from_persisted_store(
     Ok(SecretBroker {
         records,
         next_id: highest_id,
+        audit_events: Vec::new(),
     })
 }
 
@@ -681,6 +871,73 @@ fn clear_bytes(bytes: &mut [u8]) {
     }
 }
 
+fn redact_sensitive_text(input: impl AsRef<str>) -> String {
+    let mut output = input.as_ref().to_string();
+    output = redact_sk_tokens(output.as_str());
+    output = redact_bearer_tokens(output.as_str());
+    output
+}
+
+fn redact_sk_tokens(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let chars: Vec<char> = input.chars().collect();
+    let mut index = 0usize;
+
+    while index < chars.len() {
+        if chars[index] == 's'
+            && index + 2 < chars.len()
+            && chars[index + 1] == 'k'
+            && chars[index + 2] == '-'
+        {
+            let mut end = index + 3;
+            while end < chars.len() {
+                let candidate = chars[end];
+                if candidate.is_ascii_alphanumeric()
+                    || candidate == '-'
+                    || candidate == '_'
+                    || candidate == '.'
+                {
+                    end = end.saturating_add(1);
+                } else {
+                    break;
+                }
+            }
+            let token_len = end.saturating_sub(index);
+            if token_len >= 12 {
+                output.push_str("sk-[REDACTED]");
+                index = end;
+                continue;
+            }
+        }
+        output.push(chars[index]);
+        index = index.saturating_add(1);
+    }
+
+    output
+}
+
+fn redact_bearer_tokens(input: &str) -> String {
+    let mut output = String::new();
+    for token in input.split_whitespace() {
+        if token.eq_ignore_ascii_case("bearer") {
+            output.push_str("Bearer ");
+            continue;
+        }
+        if output.ends_with("Bearer ")
+            && token.len() >= 16
+            && token
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+        {
+            output.push_str("[REDACTED] ");
+            continue;
+        }
+        output.push_str(token);
+        output.push(' ');
+    }
+    output.trim_end().to_string()
+}
+
 fn now_unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -693,9 +950,10 @@ fn now_unix_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        EnvAesKekAdapter, SecretBroker, SecretHandle, SecretInjectionTarget, StaticAesKekAdapter,
-        is_secret_env_reference, render_secret_env_reference, resolve_secret_env_reference,
-        rotate_encrypted_store_kek, with_global_secret_broker,
+        EnvAesKekAdapter, SecretAuditAction, SecretAuditDecision, SecretBroker, SecretHandle,
+        SecretInjectionTarget, StaticAesKekAdapter, is_secret_env_reference,
+        render_secret_env_reference, resolve_secret_env_reference, rotate_encrypted_store_kek,
+        with_global_secret_broker,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -988,6 +1246,70 @@ mod tests {
             Err(_) => return,
         };
         assert_eq!(resolved.expose(), "sk-rotate-secret");
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn broker_audit_events_capture_allow_and_deny_decisions() {
+        let mut broker = SecretBroker::new();
+        let handle = broker.store_secret("OPENAI_API_KEY", "sk-audit-secret-value");
+        assert!(handle.is_ok());
+        let handle = match handle {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+
+        let resolved = broker.resolve_secret_handle(&handle);
+        assert!(resolved.is_ok());
+
+        let revoked = broker.rotate_or_revoke_secret(&handle, None);
+        assert!(revoked.is_ok());
+
+        let denied = broker.resolve_secret_handle(&handle);
+        assert!(denied.is_err());
+
+        let events = broker.latest_audit_events(16);
+        assert!(!events.is_empty());
+        assert!(events.iter().any(|event| {
+            event.action == SecretAuditAction::StoreSecret
+                && event.decision == SecretAuditDecision::Allowed
+        }));
+        assert!(events.iter().any(|event| {
+            event.action == SecretAuditAction::ResolveSecretHandle
+                && event.decision == SecretAuditDecision::Denied
+        }));
+        for event in events {
+            assert!(!event.detail.contains("sk-audit-secret-value"));
+        }
+    }
+
+    #[test]
+    fn exported_audit_log_redacts_secret_like_tokens() {
+        let mut broker = SecretBroker::new();
+        let handle = broker.store_secret("sk-live-label-value-12345", "sk-live-plain-secret-12345");
+        assert!(handle.is_ok());
+        let handle = match handle {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        let injected =
+            broker.inject_secret(&handle, SecretInjectionTarget::HttpAuthorizationBearer);
+        assert!(injected.is_ok());
+
+        let path = unique_temp_path("broker_audit_log");
+        let saved = broker.save_redacted_audit_events_to_path(path.as_path());
+        assert!(saved.is_ok());
+
+        let contents = fs::read_to_string(path.as_path());
+        assert!(contents.is_ok());
+        let contents = match contents {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        assert!(contents.contains("schema_version"));
+        assert!(contents.contains("[REDACTED]"));
+        assert!(!contents.contains("sk-live-plain-secret-12345"));
 
         let _ = fs::remove_file(path);
     }
