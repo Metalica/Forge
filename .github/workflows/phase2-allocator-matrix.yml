@@ -1,0 +1,246 @@
+name: phase2-allocator-matrix
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUSTUP_TOOLCHAIN: stable
+
+jobs:
+  windows-allocator-builds:
+    if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.FORGE_ENABLE_SELF_HOSTED == 'true'
+    runs-on: [self-hosted, windows, x64]
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: .
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ["x86_64-pc-windows-gnu"]
+        allocator_feature:
+          - allocator-mimalloc
+          - allocator-jemalloc
+          - allocator-snmalloc
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Bootstrap Forge environment
+        run: ./scripts/bootstrap_env.ps1
+
+      - name: Validate allocator benchmark harness
+        run: ./scripts/test_allocator_benchmark.ps1
+
+      - name: Validate phase2 adoption gate harness
+        run: ./scripts/test_phase2_adoption_gate.ps1
+
+      - name: Build allocator variant
+        run: |
+          $allocator = "${{ matrix.allocator_feature }}"
+          $target = "${{ matrix.target }}"
+          $env:CARGO_TARGET_DIR = "E:/Forge/target/allocator-ci/$allocator"
+          cargo check `
+            --target $target `
+            -p execution_plane `
+            -p runtime_registry `
+            --no-default-features `
+            --features "execution_plane/$allocator,runtime_registry/$allocator"
+
+  linux-lmdb-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Normalize Cargo config for Linux CI
+        shell: bash
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml <<'EOF'
+          [build]
+          target = "x86_64-unknown-linux-gnu"
+          target-dir = "target"
+
+          [profile.dev]
+          incremental = false
+
+          [profile.test]
+          incremental = false
+          EOF
+
+      - name: Install native build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gawk liblmdb-dev
+
+      - name: Run URM LMDB module tests
+        run: cargo test -p urm --lib lmdb_metadata
+
+      - name: Run control-plane LMDB consumer tests
+        run: cargo test -p control_plane --lib lmdb_metadata
+
+      - name: Run execution-plane LMDB parity tests
+        run: cargo test -p execution_plane --lib lmdb
+
+  linux-topology-hwloc-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Normalize Cargo config for Linux CI
+        shell: bash
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml <<'EOF'
+          [build]
+          target = "x86_64-unknown-linux-gnu"
+          target-dir = "target"
+
+          [profile.dev]
+          incremental = false
+
+          [profile.test]
+          incremental = false
+          EOF
+
+      - name: Install native build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gawk libhwloc-dev
+
+      - name: Run URM topology tests with hwloc enabled
+        run: 'cargo test -p urm --lib --features topology-hwloc topology::tests::'
+
+  linux-phase2-adoption-gate-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Normalize Cargo config for Linux CI
+        shell: bash
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml <<'EOF'
+          [build]
+          target = "x86_64-unknown-linux-gnu"
+          target-dir = "target"
+
+          [profile.dev]
+          incremental = false
+
+          [profile.test]
+          incremental = false
+          EOF
+
+      - name: Install native build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gawk liblmdb-dev
+
+      - name: Run reduced phase2 adoption gate smoke
+        shell: pwsh
+        run: |
+          $outputDir = Join-Path $PWD ".tmp/ci-phase2-adoption-gate"
+          ./scripts/phase2_adoption_gate.ps1 `
+            -OutputDir $outputDir `
+            -AllocatorQueueIterations 160 `
+            -AllocatorAgentIterations 160 `
+            -AllocatorIndexDocuments 64 `
+            -AllocatorIndexTokens 40 `
+            -AllocatorIndexRetainedDocuments 12 `
+            -IoIterations 12000 `
+            -IndexDocuments 96 `
+            -IndexTokens 56 `
+            -IndexRetainedDocuments 20
+
+      - name: Validate phase2 adoption gate artifacts
+        shell: pwsh
+        run: |
+          $outputDir = Join-Path $PWD ".tmp/ci-phase2-adoption-gate"
+          $jsonArtifact = Get-ChildItem -Path $outputDir -File -Filter "phase2-adoption-gate-*.json" |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+          if ($null -eq $jsonArtifact) {
+            throw "phase2 adoption gate JSON artifact was not generated"
+          }
+          $markdownArtifact = Get-ChildItem -Path $outputDir -File -Filter "phase2-adoption-gate-*.md" |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+          if ($null -eq $markdownArtifact) {
+            throw "phase2 adoption gate markdown summary was not generated"
+          }
+          $artifact = Get-Content $jsonArtifact.FullName -Raw | ConvertFrom-Json
+          if ($null -eq $artifact.selected_defaults) {
+            throw "selected_defaults missing from phase2 adoption gate artifact"
+          }
+          if ($null -eq $artifact.benchmark_deltas.allocator.policy) {
+            throw "allocator policy guardrails missing from phase2 adoption gate artifact"
+          }
+          if ($null -eq $artifact.benchmark_deltas.io -or $null -eq $artifact.benchmark_deltas.lmdb) {
+            throw "io/lmdb benchmark deltas missing from phase2 adoption gate artifact"
+          }
+          if ($null -eq $artifact.rollback_toggles) {
+            throw "rollback_toggles missing from phase2 adoption gate artifact"
+          }
+          Write-Host "phase2 adoption gate smoke artifact validation passed."
+
+      - name: Upload phase2 adoption gate smoke artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phase2-adoption-gate-smoke
+          path: .tmp/ci-phase2-adoption-gate/phase2-adoption-gate-*
+          if-no-files-found: error
+
+  linux-jemalloc-build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ["x86_64-unknown-linux-gnu"]
+        allocator_feature:
+          - allocator-jemalloc
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Normalize Cargo config for Linux CI
+        shell: bash
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml <<'EOF'
+          [build]
+          target = "x86_64-unknown-linux-gnu"
+          target-dir = "target"
+
+          [profile.dev]
+          incremental = false
+
+          [profile.test]
+          incremental = false
+          EOF
+
+      - name: Install native build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gawk
+
+      - name: Build allocator variant
+        run: |
+          allocator="${{ matrix.allocator_feature }}"
+          target="${{ matrix.target }}"
+          export CARGO_TARGET_DIR="${GITHUB_WORKSPACE}/target/allocator-ci/${allocator}"
+          cargo check \
+            --target "${target}" \
+            -p execution_plane \
+            -p runtime_registry \
+            --no-default-features \
+            --features "execution_plane/${allocator},runtime_registry/${allocator}"

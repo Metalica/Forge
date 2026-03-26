@@ -1,0 +1,50 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/ui_shell",
+  "crates/control_plane",
+  "crates/execution_plane",
+  "crates/urm",
+  "crates/runtime_registry",
+  "crates/forge_security",
+]
+
+[workspace.package]
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+rust-version = "1.85"
+
+[workspace.dependencies]
+mimalloc = "0.1.48"
+tikv-jemallocator = "0.6.1"
+snmalloc-rs = { version = "0.3.8", default-features = false, features = ["build_cc"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+dbg_macro = "deny"
+
+[workspace.metadata.forge.allocator_policy]
+config_key = "allocator"
+default = "mimalloc"
+supported = ["mimalloc", "jemalloc", "snmalloc"]
+
+[workspace.metadata.forge.allocator_build_modes]
+default_feature = "allocator-mimalloc"
+supported_features = ["allocator-mimalloc", "allocator-jemalloc", "allocator-snmalloc"]
+packages = ["execution_plane", "runtime_registry"]
+ci_check_scope = "cargo check -p execution_plane -p runtime_registry"
+
+[workspace.metadata.forge.allocator_build_modes.supported_targets]
+allocator-mimalloc = ["x86_64-pc-windows-gnu"]
+allocator-jemalloc = ["x86_64-pc-windows-gnu", "x86_64-unknown-linux-gnu"]
+allocator-snmalloc = ["x86_64-pc-windows-gnu"]
+
+[patch.crates-io]
+metal = { path = "third_party/metal-0.29.0-patched" }

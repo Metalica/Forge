@@ -1,0 +1,27 @@
+[build]
+target = "x86_64-pc-windows-gnu"
+target-dir = "E:/Forge/target"
+
+[env]
+RUST_HOME = { value = "E:/Rust", force = false }
+PYTHON_HOME = { value = "E:/Python", force = false }
+MINGW64_HOME = { value = "E:/mingw64", force = false }
+MINGW64_BIN = { value = "E:/mingw64/bin", force = true }
+CC = { value = "E:/mingw64/bin/gcc.exe", force = true }
+CXX = { value = "E:/mingw64/bin/g++.exe", force = true }
+AR = { value = "E:/mingw64/bin/ar.exe", force = true }
+DLLTOOL = { value = "E:/mingw64/bin/dlltool.exe", force = true }
+CC_x86_64_pc_windows_gnu = { value = "E:/mingw64/bin/gcc.exe", force = true }
+CXX_x86_64_pc_windows_gnu = { value = "E:/mingw64/bin/g++.exe", force = true }
+AR_x86_64_pc_windows_gnu = { value = "E:/mingw64/bin/ar.exe", force = true }
+
+[target.x86_64-pc-windows-gnu]
+linker = "E:/mingw64/bin/gcc.exe"
+ar = "E:/mingw64/bin/ar.exe"
+rustflags = ["-Cdlltool=E:/mingw64/bin/dlltool.exe"]
+
+[profile.dev]
+incremental = false
+
+[profile.test]
+incremental = false

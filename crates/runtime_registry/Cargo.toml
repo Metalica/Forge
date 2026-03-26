@@ -1,0 +1,30 @@
+[package]
+name = "runtime_registry"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["allocator-mimalloc"]
+allocator-mimalloc = ["dep:mimalloc"]
+allocator-jemalloc = ["dep:tikv-jemallocator"]
+allocator-snmalloc = ["dep:snmalloc-rs"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+ureq = { version = "2.12.1", default-features = true, features = ["json"] }
+urm = { path = "../urm" }
+forge_security = { path = "../forge_security" }
+mimalloc = { workspace = true, optional = true }
+tikv-jemallocator = { workspace = true, optional = true }
+snmalloc-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+control_plane = { path = "../control_plane" }
+execution_plane = { path = "../execution_plane" }

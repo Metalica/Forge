@@ -1,0 +1,172 @@
+﻿name: conditional-gate
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUSTUP_TOOLCHAIN: stable
+
+jobs:
+  linux-conditional-gate-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Normalize Cargo config for Linux CI
+        shell: bash
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml <<'EOF'
+          [build]
+          target = "x86_64-unknown-linux-gnu"
+          target-dir = "target"
+
+          [profile.dev]
+          incremental = false
+
+          [profile.test]
+          incremental = false
+          EOF
+
+      - name: Install native build tools
+        timeout-minutes: 8
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gawk
+
+      - name: Run reduced conditional gate smoke
+        timeout-minutes: 12
+        shell: pwsh
+        run: |
+          $outputDir = Join-Path $PWD ".tmp/ci-conditional-gate"
+          ./scripts/conditional_adoption_gate.ps1 `
+            -OutputDir $outputDir `
+            -Iterations 8 `
+            -OpenVinoMinThroughputGainPercent 5 `
+            -ThpMinThroughputGainPercent 4 `
+            -PressureMinP95ImprovementPercent 4 `
+            -PressureMinAvgImprovementPercent 4 `
+            -OpenBlasMinThroughputGainPercent 4 `
+            -BlisMinThroughputGainPercent 4
+
+      - name: Validate conditional gate artifacts
+        timeout-minutes: 4
+        shell: pwsh
+        run: |
+          $outputDir = Join-Path $PWD ".tmp/ci-conditional-gate"
+          $jsonArtifact = Get-ChildItem -Path $outputDir -File -Filter "conditional-adoption-gate-*.json" |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+          if ($null -eq $jsonArtifact) {
+            throw "conditional adoption gate JSON artifact was not generated"
+          }
+          $markdownArtifact = Get-ChildItem -Path $outputDir -File -Filter "conditional-adoption-gate-*.md" |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+          if ($null -eq $markdownArtifact) {
+            throw "conditional adoption gate markdown summary was not generated"
+          }
+          $artifact = Get-Content $jsonArtifact.FullName -Raw | ConvertFrom-Json
+          if ($null -eq $artifact.selected_defaults) {
+            throw "selected_defaults missing from conditional gate artifact"
+          }
+          if ($null -eq $artifact.decisions.openvino_backend) {
+            throw "openvino_backend decision missing from conditional gate artifact"
+          }
+          if ($null -eq $artifact.decisions.transparent_huge_pages) {
+            throw "transparent_huge_pages decision missing from conditional gate artifact"
+          }
+          if ($null -eq $artifact.decisions.zswap -or $null -eq $artifact.decisions.zram) {
+            throw "zswap/zram decisions missing from conditional gate artifact"
+          }
+          if ($null -eq $artifact.decisions.openblas_backend -or $null -eq $artifact.decisions.blis_backend) {
+            throw "openblas/blis decisions missing from conditional gate artifact"
+          }
+          if ($null -eq $artifact.decisions.perf_profiler -or $null -eq $artifact.decisions.tracy_profiler) {
+            throw "perf/tracy decisions missing from conditional gate artifact"
+          }
+          if ($null -eq $artifact.decisions.autofdo_optimizer -or $null -eq $artifact.decisions.bolt_optimizer) {
+            throw "autofdo/bolt decisions missing from conditional gate artifact"
+          }
+          if ($null -eq $artifact.decisions.ispc_kernels) {
+            throw "ispc decision missing from conditional gate artifact"
+          }
+          if ($null -eq $artifact.decisions.highway_simd -or $null -eq $artifact.decisions.rust_arch_simd) {
+            throw "highway/rust-arch-simd decisions missing from conditional gate artifact"
+          }
+          if ($null -eq $artifact.decisions.rayon_parallelism) {
+            throw "rayon decision missing from conditional gate artifact"
+          }
+          if ($null -eq $artifact.recommended_env_flags.OPENVINO_BENCHMARK_OK) {
+            throw "recommended env flag OPENVINO_BENCHMARK_OK missing"
+          }
+          if ($null -eq $artifact.recommended_env_flags.OPENBLAS_BENCHMARK_OK -or $null -eq $artifact.recommended_env_flags.BLIS_BENCHMARK_OK) {
+            throw "recommended env flags for openblas/blis missing"
+          }
+          if ($null -eq $artifact.recommended_env_flags.PERF_BENCHMARK_OK -or $null -eq $artifact.recommended_env_flags.TRACY_BENCHMARK_OK) {
+            throw "recommended env flags for perf/tracy missing"
+          }
+          if ($null -eq $artifact.recommended_env_flags.AUTOFDO_BENCHMARK_OK -or $null -eq $artifact.recommended_env_flags.BOLT_BENCHMARK_OK) {
+            throw "recommended env flags for autofdo/bolt missing"
+          }
+          if ($null -eq $artifact.recommended_env_flags.ISPC_BENCHMARK_OK) {
+            throw "recommended env flag ISPC_BENCHMARK_OK missing"
+          }
+          if ($null -eq $artifact.recommended_env_flags.HIGHWAY_BENCHMARK_OK -or $null -eq $artifact.recommended_env_flags.RUST_ARCH_SIMD_BENCHMARK_OK) {
+            throw "recommended env flags for highway/rust-arch-simd missing"
+          }
+          if ($null -eq $artifact.recommended_env_flags.RAYON_BENCHMARK_OK) {
+            throw "recommended env flag RAYON_BENCHMARK_OK missing"
+          }
+          Write-Host "conditional gate smoke artifact validation passed."
+
+      - name: Upload conditional gate smoke artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: conditional-gate-smoke
+          path: .tmp/ci-conditional-gate/conditional-adoption-gate-*
+          if-no-files-found: error
+          retention-days: 14
+
+  linux-conditional-gate-selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Normalize Cargo config for Linux CI
+        shell: bash
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml <<'EOF'
+          [build]
+          target = "x86_64-unknown-linux-gnu"
+          target-dir = "target"
+
+          [profile.dev]
+          incremental = false
+
+          [profile.test]
+          incremental = false
+          EOF
+
+      - name: Install native build tools
+        timeout-minutes: 8
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gawk
+
+      - name: Validate conditional gate harness
+        timeout-minutes: 10
+        shell: pwsh
+        run: ./scripts/test_conditional_adoption_gate.ps1
+

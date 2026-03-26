@@ -1,0 +1,33 @@
+name: phase0-ci
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  security-baseline:
+    if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.FORGE_ENABLE_SELF_HOSTED == 'true'
+    runs-on: [self-hosted, windows, x64]
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: .
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Bootstrap Forge environment
+        run: ./scripts/bootstrap_env.ps1
+
+      - name: Install audit tools
+        run: |
+          ./scripts/bootstrap_env.ps1
+          cargo install cargo-audit --locked
+          cargo install cargo-deny --locked
+
+      - name: Run Phase 0 checks
+        run: ./scripts/run_phase0_checks.ps1

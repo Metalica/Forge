@@ -1,0 +1,25 @@
+/target/
+**/target/
+target*/
+.tmp/
+**/.tmp/
+.local/
+artifacts/
+
+# Local runtime/model payloads (keep locally, do not upload)
+lamma.cpp/
+runtimes/
+models/
+*.gguf
+docs/
+
+# Local Forge state snapshots
+.forge_*.json
+
+# Build and OS noise
+scripts/__pycache__/
+*.pyc
+**/*.rs.bk
+.DS_Store
+Thumbs.db
+forge.exe

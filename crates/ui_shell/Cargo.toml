@@ -1,0 +1,19 @@
+[package]
+name = "ui_shell"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+control_plane = { path = "../control_plane" }
+execution_plane = { path = "../execution_plane" }
+runtime_registry = { path = "../runtime_registry" }
+urm = { path = "../urm" }
+floem = { version = "0.2.0", default-features = false, features = ["vger"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

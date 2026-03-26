@@ -1,0 +1,26 @@
+[package]
+name = "execution_plane"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["allocator-mimalloc"]
+allocator-mimalloc = ["dep:mimalloc"]
+allocator-jemalloc = ["dep:tikv-jemallocator"]
+allocator-snmalloc = ["dep:snmalloc-rs"]
+io-uring = []
+
+[dependencies]
+portable-pty = "0.9.0"
+control_plane = { path = "../control_plane" }
+urm = { path = "../urm" }
+serde = { version = "1.0", features = ["derive"] }
+mimalloc = { workspace = true, optional = true }
+tikv-jemallocator = { workspace = true, optional = true }
+snmalloc-rs = { workspace = true, optional = true }

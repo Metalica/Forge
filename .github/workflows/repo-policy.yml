@@ -1,0 +1,30 @@
+name: repo-policy
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  enforce-no-docs-tracking:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Enforce hard rule for docs
+        shell: bash
+        run: |
+          set -euo pipefail
+          tracked="$(git ls-files 'docs/**')"
+          if [ -n "${tracked}" ]; then
+            echo "Hard rule violation: docs/ content is tracked by git."
+            echo "This folder must remain local-only and cannot be uploaded to GitHub."
+            echo "${tracked}"
+            exit 1
+          fi
+          echo "Hard rule passed: docs/ is not tracked."

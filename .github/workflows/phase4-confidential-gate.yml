@@ -1,0 +1,129 @@
+name: phase4-confidential-gate
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUSTUP_TOOLCHAIN: stable
+
+jobs:
+  linux-phase4-confidential-gate-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Normalize Cargo config for Linux CI
+        shell: bash
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml <<'EOF'
+          [build]
+          target = "x86_64-unknown-linux-gnu"
+          target-dir = "target"
+
+          [profile.dev]
+          incremental = false
+
+          [profile.test]
+          incremental = false
+          EOF
+
+      - name: Install native build tools
+        timeout-minutes: 8
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gawk
+
+      - name: Run reduced phase4 confidential gate smoke
+        timeout-minutes: 12
+        shell: pwsh
+        run: |
+          $outputDir = Join-Path $PWD ".tmp/ci-phase4-confidential-gate"
+          ./scripts/phase4_confidential_adoption_gate.ps1 `
+            -OutputDir $outputDir `
+            -Iterations 6 `
+            -ChatBaseDelayMs 4 `
+            -ChatTokensPerMsDivisor 12 `
+            -VerifierDelayMs 2 `
+            -SmallOverheadMaxPercent 60 `
+            -MediumOverheadMaxPercent 40 `
+            -LargeOverheadMaxPercent 25
+
+      - name: Validate phase4 confidential gate artifacts
+        timeout-minutes: 4
+        shell: pwsh
+        run: |
+          $outputDir = Join-Path $PWD ".tmp/ci-phase4-confidential-gate"
+          $jsonArtifact = Get-ChildItem -Path $outputDir -File -Filter "phase4-confidential-adoption-gate-*.json" |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+          if ($null -eq $jsonArtifact) {
+            throw "phase4 confidential adoption gate JSON artifact was not generated"
+          }
+          $markdownArtifact = Get-ChildItem -Path $outputDir -File -Filter "phase4-confidential-adoption-gate-*.md" |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+          if ($null -eq $markdownArtifact) {
+            throw "phase4 confidential adoption gate markdown summary was not generated"
+          }
+          $artifact = Get-Content $jsonArtifact.FullName -Raw | ConvertFrom-Json
+          if ($null -eq $artifact.workloads -or $artifact.workloads.Count -ne 3) {
+            throw "expected three workload rows in phase4 confidential gate artifact"
+          }
+          if ($null -eq $artifact.decision -or $null -eq $artifact.decision.reasons) {
+            throw "decision reasons missing from phase4 confidential gate artifact"
+          }
+          if ($null -eq $artifact.rollback_toggles) {
+            throw "rollback_toggles missing from phase4 confidential gate artifact"
+          }
+          Write-Host "phase4 confidential gate smoke artifact validation passed."
+
+      - name: Upload phase4 confidential gate smoke artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phase4-confidential-gate-smoke
+          path: .tmp/ci-phase4-confidential-gate/phase4-confidential-adoption-gate-*
+          if-no-files-found: error
+          retention-days: 14
+
+  linux-phase4-confidential-gate-selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Normalize Cargo config for Linux CI
+        shell: bash
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml <<'EOF'
+          [build]
+          target = "x86_64-unknown-linux-gnu"
+          target-dir = "target"
+
+          [profile.dev]
+          incremental = false
+
+          [profile.test]
+          incremental = false
+          EOF
+
+      - name: Install native build tools
+        timeout-minutes: 8
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gawk
+
+      - name: Validate phase4 confidential gate harness
+        timeout-minutes: 10
+        shell: pwsh
+        run: ./scripts/test_phase4_confidential_adoption_gate.ps1

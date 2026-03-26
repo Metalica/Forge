@@ -1,0 +1,25 @@
+[package]
+name = "urm"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+topology-hwloc = ["dep:hwloc"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+lmdb = { package = "lmdb-rkv", version = "0.14.0" }
+
+[target.'cfg(not(windows))'.dependencies]
+hwloc = { package = "hwloc2", version = "2.2.0", optional = true }
+
+[dev-dependencies]
+serde_json = "1.0"
