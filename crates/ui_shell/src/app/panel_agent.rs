@@ -988,6 +988,54 @@ fn extensions_panel(
         }
     };
 
+    let approve_overbroad_action = {
+        let extension_host = extension_host.clone();
+        move || {
+            let target = extension_target.get().trim().to_string();
+            if target.is_empty() {
+                extension_status.set(String::from(
+                    "approve broad scope skipped: extension id is empty",
+                ));
+                return;
+            }
+            let mut host = extension_host.borrow_mut();
+            match host.set_overbroad_approved(target.as_str(), true) {
+                Ok(()) => extension_status.set(format!(
+                    "overbroad scope approval granted for: {target}"
+                )),
+                Err(error) => {
+                    extension_status.set(format_extension_host_error(&target, &error));
+                }
+            }
+            drop(host);
+            persist_extension_host_with_notice(&extension_host, extension_status);
+        }
+    };
+
+    let revoke_overbroad_action = {
+        let extension_host = extension_host.clone();
+        move || {
+            let target = extension_target.get().trim().to_string();
+            if target.is_empty() {
+                extension_status.set(String::from(
+                    "revoke broad scope skipped: extension id is empty",
+                ));
+                return;
+            }
+            let mut host = extension_host.borrow_mut();
+            match host.set_overbroad_approved(target.as_str(), false) {
+                Ok(()) => extension_status.set(format!(
+                    "overbroad scope approval revoked for: {target}"
+                )),
+                Err(error) => {
+                    extension_status.set(format_extension_host_error(&target, &error));
+                }
+            }
+            drop(host);
+            persist_extension_host_with_notice(&extension_host, extension_status);
+        }
+    };
+
     let isolate_action = {
         let extension_host = extension_host.clone();
         let resources = resources.clone();
@@ -1122,6 +1170,16 @@ fn extensions_panel(
         Some(extension_status),
         revoke_permissions_action,
     );
+    let approve_overbroad_action = guarded_ui_action(
+        "extensions.approve_overbroad",
+        Some(extension_status),
+        approve_overbroad_action,
+    );
+    let revoke_overbroad_action = guarded_ui_action(
+        "extensions.revoke_overbroad",
+        Some(extension_status),
+        revoke_overbroad_action,
+    );
     let isolate_action = guarded_ui_action(
         "extensions.isolate",
         Some(extension_status),
@@ -1151,6 +1209,8 @@ fn extensions_panel(
             button("Disable").action(disable_action),
             button("Grant Required").action(grant_permissions_action),
             button("Revoke Required").action(revoke_permissions_action),
+            button("Approve Broad Scope").action(approve_overbroad_action),
+            button("Revoke Broad Scope").action(revoke_overbroad_action),
             button("Check Perms").action(permission_check_action),
             button("Isolate").action(isolate_action),
             button("Recover").action(recover_action),
@@ -1278,7 +1338,7 @@ fn format_extension_inventory_detail(host: &ExtensionHost) -> String {
             "unsigned"
         };
         lines.push(format!(
-            "- {} ({}) state={} class={} publisher={} version={} min_forge={} signature={} revoked={} budget={}MB cpu_budget={}% idle={}MB startup={}ms perms=[{}]",
+            "- {} ({}) state={} class={} publisher={} version={} min_forge={} signature={} revoked={} overbroad_approved={} budget={}MB cpu_budget={}% idle={}MB startup={}ms perms=[{}]",
             entry.manifest.id,
             entry.manifest.display_name,
             format_extension_state(entry.state),
@@ -1288,6 +1348,7 @@ fn format_extension_inventory_detail(host: &ExtensionHost) -> String {
             entry.manifest.minimum_forge_version,
             signature_status,
             entry.manifest.revoked,
+            entry.overbroad_approved,
             entry.manifest.memory_budget_mb,
             entry.manifest.cpu_budget_percent,
             entry.manifest.idle_cost_mb,
@@ -1337,6 +1398,10 @@ fn format_extension_target_detail(host: &ExtensionHost, target: &str) -> String 
             clip_text(&format_extension_host_error(trimmed, &error), 80)
         ),
     };
+    let overbroad_required = host
+        .overbroad_approval_required(trimmed)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
     let signature_status = match entry.manifest.signature.as_ref() {
         Some(signature) => format!(
             "signed key_id={} algorithm={}",
@@ -1345,7 +1410,7 @@ fn format_extension_target_detail(host: &ExtensionHost, target: &str) -> String 
         None => "unsigned".to_string(),
     };
     format!(
-        "id={id}\nname={name}\nstate={state}\nclass={class}\npublisher={publisher}\nversion={version}\nminimum_forge_version={minimum_forge_version}\npackage_checksum_sha256={checksum}\nsignature={signature_status}\nrevoked={revoked}\ncapabilities=[{capabilities}]\nside_effects=[{side_effects}]\nmemory_budget_mb={memory_budget}\ncpu_budget_percent={cpu_budget}\nrequires_network={network}\nbackground_activity={activity}\nrequested_permissions=[{permissions}]\ngranted_permissions=[{granted_permissions}]\n{permission_line}\nlast_error={last_error}",
+        "id={id}\nname={name}\nstate={state}\nclass={class}\npublisher={publisher}\nversion={version}\nminimum_forge_version={minimum_forge_version}\npackage_checksum_sha256={checksum}\nsignature={signature_status}\nrevoked={revoked}\noverbroad_approval_required={overbroad_required}\noverbroad_approved={overbroad_approved}\ncapabilities=[{capabilities}]\nside_effects=[{side_effects}]\nmemory_budget_mb={memory_budget}\ncpu_budget_percent={cpu_budget}\nrequires_network={network}\nbackground_activity={activity}\nrequested_permissions=[{permissions}]\ngranted_permissions=[{granted_permissions}]\n{permission_line}\nlast_error={last_error}",
         id = entry.manifest.id,
         name = entry.manifest.display_name,
         state = format_extension_state(entry.state),
@@ -1356,6 +1421,8 @@ fn format_extension_target_detail(host: &ExtensionHost, target: &str) -> String 
         checksum = entry.manifest.package_checksum_sha256,
         signature_status = signature_status,
         revoked = entry.manifest.revoked,
+        overbroad_required = overbroad_required,
+        overbroad_approved = entry.overbroad_approved,
         capabilities = format_string_list(&entry.manifest.declared_capabilities),
         side_effects = format_string_list(&entry.manifest.declared_side_effects),
         memory_budget = entry.manifest.memory_budget_mb,
@@ -1422,6 +1489,14 @@ fn format_extension_host_error(target: &str, error: &ExtensionHostError) -> Stri
             "extension {} blocked by manifest security policy: {}",
             extension_id,
             clip_text(reason, 120)
+        ),
+        ExtensionHostError::OverbroadApprovalRequired {
+            extension_id,
+            permissions,
+        } => format!(
+            "extension {} requires explicit broad-scope approval for permissions [{}]",
+            extension_id,
+            format_permission_list(permissions)
         ),
         ExtensionHostError::MissingPermissions {
             extension_id,

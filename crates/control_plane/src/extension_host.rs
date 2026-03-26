@@ -68,6 +68,44 @@ impl ExtensionPermission {
     }
 }
 
+fn is_high_risk_extension_permission(permission: ExtensionPermission) -> bool {
+    matches!(
+        permission,
+        ExtensionPermission::FilesystemEdits
+            | ExtensionPermission::Shell
+            | ExtensionPermission::Network
+            | ExtensionPermission::Git
+            | ExtensionPermission::ModelDownloads
+            | ExtensionPermission::ExternalApis
+    )
+}
+
+fn is_overbroad_permission_set(permissions: &[ExtensionPermission]) -> bool {
+    let has_shell = permissions
+        .iter()
+        .any(|permission| matches!(permission, ExtensionPermission::Shell));
+    let has_network = permissions.iter().any(|permission| {
+        matches!(
+            permission,
+            ExtensionPermission::Network | ExtensionPermission::ExternalApis
+        )
+    });
+    let has_write_surface = permissions.iter().any(|permission| {
+        matches!(
+            permission,
+            ExtensionPermission::FilesystemEdits
+                | ExtensionPermission::Git
+                | ExtensionPermission::ModelDownloads
+        )
+    });
+    let high_risk_count = permissions
+        .iter()
+        .filter(|permission| is_high_risk_extension_permission(**permission))
+        .count();
+
+    (has_shell && has_network) || (has_network && has_write_surface) || high_risk_count >= 3
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExtensionManifestSignature {
     pub key_id: String,
@@ -324,6 +362,10 @@ impl ExtensionManifest {
         serde_json::to_vec(&payload).ok()
     }
 
+    fn requires_overbroad_approval(&self) -> bool {
+        is_overbroad_permission_set(&self.requested_permissions)
+    }
+
     fn security_gate(
         &self,
         forge_version: &str,
@@ -465,6 +507,8 @@ pub struct ExtensionRuntimeSnapshot {
     pub state: ExtensionState,
     pub last_error: Option<String>,
     pub granted_permissions: Vec<ExtensionPermissionGrantSnapshot>,
+    #[serde(default)]
+    pub overbroad_approved: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -472,6 +516,7 @@ pub struct ExtensionRuntime {
     pub manifest: ExtensionManifest,
     pub state: ExtensionState,
     pub last_error: Option<String>,
+    pub overbroad_approved: bool,
     granted_permissions: HashMap<ExtensionPermission, bool>,
 }
 
@@ -485,6 +530,7 @@ impl ExtensionRuntime {
             manifest,
             state: ExtensionState::Disabled,
             last_error: None,
+            overbroad_approved: false,
             granted_permissions,
         }
     }
@@ -504,6 +550,10 @@ pub enum ExtensionHostError {
     SecurityPolicyBlocked {
         extension_id: String,
         reason: String,
+    },
+    OverbroadApprovalRequired {
+        extension_id: String,
+        permissions: Vec<ExtensionPermission>,
     },
     MissingPermissions {
         extension_id: String,
@@ -663,6 +713,27 @@ impl ExtensionHost {
         Ok(grants)
     }
 
+    pub fn overbroad_approval_required(&self, id: &str) -> Result<bool, ExtensionHostError> {
+        let runtime = self
+            .extensions
+            .get(id)
+            .ok_or_else(|| ExtensionHostError::NotFound(id.to_string()))?;
+        Ok(runtime.manifest.requires_overbroad_approval())
+    }
+
+    pub fn set_overbroad_approved(
+        &mut self,
+        id: &str,
+        approved: bool,
+    ) -> Result<(), ExtensionHostError> {
+        let runtime = self
+            .extensions
+            .get_mut(id)
+            .ok_or_else(|| ExtensionHostError::NotFound(id.to_string()))?;
+        runtime.overbroad_approved = approved;
+        Ok(())
+    }
+
     pub fn set_enabled(&mut self, id: &str, enabled: bool) -> Result<(), ExtensionHostError> {
         if enabled {
             let runtime = self
@@ -676,6 +747,12 @@ impl ExtensionHost {
                 return Err(ExtensionHostError::SecurityPolicyBlocked {
                     extension_id: id.to_string(),
                     reason: error.to_string(),
+                });
+            }
+            if runtime.manifest.requires_overbroad_approval() && !runtime.overbroad_approved {
+                return Err(ExtensionHostError::OverbroadApprovalRequired {
+                    extension_id: id.to_string(),
+                    permissions: runtime.manifest.requested_permissions.clone(),
                 });
             }
             let check = self.permission_check(id)?;
@@ -767,6 +844,7 @@ impl ExtensionHost {
                     state: runtime.state,
                     last_error: runtime.last_error.clone(),
                     granted_permissions,
+                    overbroad_approved: runtime.overbroad_approved,
                 }
             })
             .collect::<Vec<_>>();
@@ -784,6 +862,7 @@ impl ExtensionHost {
             let mut runtime = ExtensionRuntime::new(entry.manifest);
             runtime.state = entry.state;
             runtime.last_error = entry.last_error;
+            runtime.overbroad_approved = entry.overbroad_approved;
 
             for grant in entry.granted_permissions {
                 runtime
@@ -938,6 +1017,39 @@ mod tests {
         manifest
     }
 
+    fn overbroad_manifest() -> ExtensionManifest {
+        let mut manifest = ExtensionManifest {
+            id: "overbroad-tool".to_string(),
+            display_name: "Overbroad Tool".to_string(),
+            publisher: TEST_MANIFEST_PUBLISHER.to_string(),
+            version: "1.0.0".to_string(),
+            minimum_forge_version: "0.1.0".to_string(),
+            package_checksum_sha256:
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_string(),
+            class: ExtensionClass::Tool,
+            idle_cost_mb: 18,
+            startup_cost_ms: 55,
+            memory_budget_mb: 128,
+            cpu_budget_percent: 20,
+            requires_network: true,
+            background_activity: "tool execution".to_string(),
+            requested_permissions: vec![
+                ExtensionPermission::Shell,
+                ExtensionPermission::Network,
+                ExtensionPermission::FilesystemEdits,
+            ],
+            declared_capabilities: vec!["tool.exec".to_string()],
+            declared_side_effects: vec![
+                "filesystem-write".to_string(),
+                "network-egress".to_string(),
+            ],
+            signature: None,
+            revoked: false,
+        };
+        manifest.signature = sign_manifest_for_tests(&manifest);
+        manifest
+    }
+
     #[test]
     fn enabling_requires_requested_permissions() {
         let mut host = ExtensionHost::new();
@@ -1041,6 +1153,31 @@ mod tests {
             error,
             ExtensionHostError::SecurityPolicyBlocked { .. }
         ));
+    }
+
+    #[test]
+    fn overbroad_manifest_requires_explicit_approval() {
+        let mut host = ExtensionHost::new();
+        register_test_manifest_signer(&mut host);
+        assert!(host.register(overbroad_manifest()).is_ok());
+        assert!(host.grant_all_permissions("overbroad-tool").is_ok());
+
+        let required = host.overbroad_approval_required("overbroad-tool");
+        assert_eq!(required.ok(), Some(true));
+
+        let enable_without_approval = host.set_enabled("overbroad-tool", true);
+        assert!(enable_without_approval.is_err());
+        let error = match enable_without_approval {
+            Ok(_) => return,
+            Err(value) => value,
+        };
+        assert!(matches!(
+            error,
+            ExtensionHostError::OverbroadApprovalRequired { .. }
+        ));
+
+        assert!(host.set_overbroad_approved("overbroad-tool", true).is_ok());
+        assert!(host.set_enabled("overbroad-tool", true).is_ok());
     }
 
     #[test]
@@ -1214,5 +1351,28 @@ mod tests {
         };
         assert!(check.can_enable);
         assert!(check.missing_permissions.is_empty());
+    }
+
+    #[test]
+    fn snapshot_restore_round_trip_preserves_overbroad_approval() {
+        let mut host = ExtensionHost::new();
+        register_test_manifest_signer(&mut host);
+        assert!(host.register(overbroad_manifest()).is_ok());
+        assert!(host.set_overbroad_approved("overbroad-tool", true).is_ok());
+
+        let snapshot = host.snapshot();
+        let restored = ExtensionHost::restore(snapshot);
+        assert!(restored.is_ok());
+        let restored = match restored {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        let overbroad = restored.get("overbroad-tool");
+        assert!(overbroad.is_some());
+        let overbroad = match overbroad {
+            Some(value) => value,
+            None => return,
+        };
+        assert!(overbroad.overbroad_approved);
     }
 }
