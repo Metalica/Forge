@@ -143,20 +143,21 @@ fn enforce_local_api_hardening(
     if !matches!(context.route_class, ProviderAdapterRouteClass::LocalBridge) {
         return Ok(());
     }
-    let target_lower = source.target.trim().to_ascii_lowercase();
-    if looks_like_db_or_secret_read_surface(target_lower.as_str()) {
+    let normalized_target = normalize_target_for_policy_scan(source.target.as_str());
+    if looks_like_db_or_secret_read_surface(normalized_target.as_str()) {
         return Err(format!(
             "local API hardening blocked source {}: direct db/secret read surfaces are blocked",
             source.id
         ));
     }
-    if looks_like_policy_or_telemetry_bypass_surface(target_lower.as_str()) {
+    if looks_like_policy_or_telemetry_bypass_surface(normalized_target.as_str()) {
         return Err(format!(
             "local API hardening blocked source {}: policy/telemetry bypass route is not allowed",
             source.id
         ));
     }
-    if !is_allowlisted_local_bridge_route(target_lower.as_str()) {
+    let normalized_path = normalize_target_path(normalized_target.as_str());
+    if !is_allowlisted_local_bridge_route(normalized_path.as_str()) {
         return Err(format!(
             "local API hardening blocked source {}: local route must be mode-a /v1 chat or mode-b task bridge",
             source.id
@@ -180,11 +181,10 @@ fn is_localhost_http_endpoint(target: &str) -> bool {
 }
 
 fn is_allowlisted_local_bridge_route(target_lower: &str) -> bool {
-    target_lower.contains("/forge/bridge/v1/task")
-        || target_lower.contains("/bridge/v1/task")
-        || target_lower.contains("/v1/chat/completions")
+    target_lower.ends_with("/forge/bridge/v1/task")
+        || target_lower.ends_with("/bridge/v1/task")
+        || target_lower.ends_with("/v1/chat/completions")
         || target_lower.ends_with("/v1")
-        || target_lower.ends_with("/v1/")
 }
 
 fn looks_like_db_or_secret_read_surface(target_lower: &str) -> bool {
@@ -224,6 +224,7 @@ fn record_provider_adapter_audit_event(
     decision: ProviderAdapterAuditDecision,
     detail: &str,
 ) {
+    let sanitized_target = sanitize_target_for_audit(source.target.as_str());
     let event = ProviderAdapterAuditEvent {
         operation: clip_text(operation.trim(), 48),
         source_id: source.id.clone(),
@@ -232,7 +233,7 @@ fn record_provider_adapter_audit_event(
             SourceKind::ApiModel => "api_model".to_string(),
             SourceKind::SidecarBridge => "sidecar_bridge".to_string(),
         },
-        target: clip_text(source.target.trim(), 160),
+        target: clip_text(sanitized_target.as_str(), 160),
         route_class: context.route_class,
         trust_label: context.trust_label.clone(),
         provenance: context.provenance.clone(),
@@ -257,4 +258,201 @@ fn clip_text(value: &str, max_chars: usize) -> String {
         return value.to_string();
     }
     value.chars().take(max_chars).collect::<String>() + "..."
+}
+
+fn normalize_target_for_policy_scan(target: &str) -> String {
+    let mut value = target.trim().to_string();
+    for _ in 0..3 {
+        let next = decode_percent_encoding_once(value.as_str());
+        if next == value {
+            break;
+        }
+        value = next;
+    }
+    value.to_ascii_lowercase()
+}
+
+fn decode_percent_encoding_once(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut output = String::with_capacity(value.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) =
+                (hex_nibble(bytes[index + 1]), hex_nibble(bytes[index + 2]))
+        {
+            let byte = (hi << 4) | lo;
+            if byte.is_ascii() {
+                output.push(char::from(byte));
+            } else {
+                output.push('%');
+                output.push(char::from(bytes[index + 1]));
+                output.push(char::from(bytes[index + 2]));
+            }
+            index += 3;
+            continue;
+        }
+        output.push(char::from(bytes[index]));
+        index += 1;
+    }
+    output
+}
+
+fn hex_nibble(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn normalize_target_path(target: &str) -> String {
+    let trimmed = target.trim();
+    let without_scheme = trimmed
+        .strip_prefix("http://")
+        .or_else(|| trimmed.strip_prefix("https://"))
+        .unwrap_or(trimmed);
+    let raw_path = if let Some((_, path_with_suffix)) = without_scheme.split_once('/') {
+        format!("/{}", path_with_suffix)
+    } else {
+        "/".to_string()
+    };
+    let path_without_query_or_fragment = raw_path
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("/")
+        .trim()
+        .to_string();
+    normalize_route_path(path_without_query_or_fragment.as_str())
+}
+
+fn normalize_route_path(path: &str) -> String {
+    let mut normalized_segments = Vec::new();
+    for segment in path.split('/') {
+        let trimmed = segment.trim();
+        if trimmed.is_empty() || trimmed == "." {
+            continue;
+        }
+        if trimmed == ".." {
+            let _ = normalized_segments.pop();
+            continue;
+        }
+        normalized_segments.push(trimmed);
+    }
+    if normalized_segments.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", normalized_segments.join("/"))
+    }
+}
+
+fn sanitize_target_for_audit(target: &str) -> String {
+    let trimmed = target.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let without_fragment = trimmed.split('#').next().unwrap_or_default();
+    let without_query = without_fragment.split('?').next().unwrap_or_default();
+    if let Some((scheme, rest)) = without_query.split_once("://") {
+        if let Some((authority, path)) = rest.split_once('/') {
+            let safe_authority = strip_authority_userinfo(authority);
+            return format!(
+                "{scheme}://{safe_authority}/{}",
+                path.trim_start_matches('/')
+            );
+        }
+        let safe_authority = strip_authority_userinfo(rest);
+        return format!("{scheme}://{safe_authority}");
+    }
+    without_query.to_string()
+}
+
+fn strip_authority_userinfo(authority: &str) -> String {
+    authority
+        .rsplit_once('@')
+        .map(|(_, host)| host)
+        .unwrap_or(authority)
+        .trim()
+        .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ProviderAdapterAuditDecision, guard_and_audit_provider_route,
+        latest_provider_adapter_audit_events,
+    };
+    use crate::source_registry::{SourceEntry, SourceKind, SourceRole};
+
+    #[test]
+    fn hardening_blocks_allowlist_bypass_when_allowed_path_appears_only_in_query() {
+        let source = SourceEntry {
+            id: "query-allowlist-bypass-attempt".to_string(),
+            display_name: "Query Allowlist Bypass Attempt".to_string(),
+            kind: SourceKind::SidecarBridge,
+            target: "http://127.0.0.1:8100/admin/debug?next=/v1/chat/completions".to_string(),
+            enabled: true,
+            eligible_roles: vec![SourceRole::Chat],
+            default_roles: vec![SourceRole::Chat],
+            confidential_endpoint: None,
+        };
+
+        let result = guard_and_audit_provider_route(&source, "chat", || Ok(()));
+        assert!(result.is_err());
+        let error = result.err().unwrap_or_default();
+        assert!(error.contains("local route must be mode-a /v1 chat or mode-b task bridge"));
+    }
+
+    #[test]
+    fn hardening_blocks_percent_encoded_db_probe_tokens() {
+        let source = SourceEntry {
+            id: "encoded-db-probe-attempt".to_string(),
+            display_name: "Encoded DB Probe Attempt".to_string(),
+            kind: SourceKind::SidecarBridge,
+            target: "http://127.0.0.1:8100/forge/bridge/v1/task?op=%256c%256d%2564%2562_read"
+                .to_string(),
+            enabled: true,
+            eligible_roles: vec![SourceRole::Chat],
+            default_roles: vec![SourceRole::Chat],
+            confidential_endpoint: None,
+        };
+
+        let result = guard_and_audit_provider_route(&source, "chat", || Ok(()));
+        assert!(result.is_err());
+        let error = result.err().unwrap_or_default();
+        assert!(error.contains("direct db/secret read surfaces are blocked"));
+    }
+
+    #[test]
+    fn audit_target_redacts_credentials_query_and_fragment() {
+        let source_id = "audit-redaction-check";
+        let source = SourceEntry {
+            id: source_id.to_string(),
+            display_name: "Audit Redaction Check".to_string(),
+            kind: SourceKind::ApiModel,
+            target: "https://forge-user:forge-pass@api.openai.com/v1/chat/completions?api_key=sk-test-secret#inline-fragment".to_string(),
+            enabled: true,
+            eligible_roles: vec![SourceRole::Chat],
+            default_roles: vec![SourceRole::Chat],
+            confidential_endpoint: None,
+        };
+
+        let _: Result<(), String> =
+            guard_and_audit_provider_route(&source, "chat", || Err("synthetic deny".to_string()));
+        let events = latest_provider_adapter_audit_events(128);
+        let maybe_event = events.iter().rev().find(|event| {
+            event.source_id == source_id && event.decision == ProviderAdapterAuditDecision::Denied
+        });
+        assert!(maybe_event.is_some());
+        let event = match maybe_event {
+            Some(value) => value,
+            None => return,
+        };
+        assert_eq!(event.target, "https://api.openai.com/v1/chat/completions");
+        assert!(!event.target.contains("forge-user"));
+        assert!(!event.target.contains("api_key"));
+        assert!(!event.target.contains("sk-test-secret"));
+    }
 }
