@@ -1,6 +1,6 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
@@ -8,12 +8,12 @@ use std::fmt;
 
 const FORGE_BUILTIN_MANIFEST_KEY_ID: &str = "forge-builtin-ed25519";
 const FORGE_BUILTIN_MANIFEST_PUBLISHER: &str = "forge-core";
-// Bootstrap signer seed for built-in manifests. This unblocks P1 cryptographic verification
-// until signed policy bundles provide externalized trust-store key distribution.
-const FORGE_BUILTIN_MANIFEST_SIGNING_SEED: [u8; 32] = [
-    0x13, 0x6d, 0x2e, 0x89, 0x44, 0xbb, 0x27, 0x8f, 0x90, 0x11, 0xce, 0x38, 0x52, 0x7a, 0xf0, 0x61,
-    0x3e, 0xaa, 0x74, 0x2a, 0x8c, 0x1d, 0x96, 0xfe, 0x54, 0xb8, 0x4f, 0x6a, 0xc9, 0x37, 0x15, 0xe2,
-];
+const FORGE_BUILTIN_MANIFEST_VERIFYING_KEY_BASE64: &str =
+    "F1qqNodtL7k6RpJJondaLah9baz17Xcr/zpYfLMEy3M=";
+const FORGE_BUILTIN_VIEWER_SIGNATURE_BASE64: &str =
+    "2t65gf6EXW2qWKg+zd1oqNX3YF57bMtwwohUEzr4QGnZjGZwPOm7ej22FrMAU9Ca6iIe1RhQsMwSt4XQxdthCQ==";
+const FORGE_BUILTIN_PROVIDER_SIGNATURE_BASE64: &str =
+    "NGtxyV67AtWHKp867w0e1ktT+A7JVBvxobEKXMO9c58YvJL4pM9yDpxaFD8MkXwupbiKC8uxNLndqDmDjetKCg==";
 
 #[derive(Debug, Clone)]
 pub struct TrustedManifestSigner {
@@ -115,43 +115,28 @@ fn is_sha256_hex(value: &str) -> bool {
     value.len() == 64 && value.chars().all(|candidate| candidate.is_ascii_hexdigit())
 }
 
-fn default_manifest_signing_key() -> SigningKey {
-    SigningKey::from_bytes(&FORGE_BUILTIN_MANIFEST_SIGNING_SEED)
-}
-
 fn default_manifest_signers() -> HashMap<String, TrustedManifestSigner> {
-    let signing_key = default_manifest_signing_key();
+    let Some(verifying_key) = builtin_manifest_verifying_key() else {
+        return HashMap::new();
+    };
     let mut signers = HashMap::new();
     signers.insert(
         FORGE_BUILTIN_MANIFEST_KEY_ID.to_string(),
         TrustedManifestSigner {
             key_id: FORGE_BUILTIN_MANIFEST_KEY_ID.to_string(),
             publisher: FORGE_BUILTIN_MANIFEST_PUBLISHER.to_string(),
-            verifying_key: signing_key.verifying_key(),
+            verifying_key,
         },
     );
     signers
 }
 
-fn sign_manifest_with_key(
-    manifest: &ExtensionManifest,
-    key_id: &str,
-    signing_key: &SigningKey,
-) -> Option<ExtensionManifestSignature> {
-    let payload = manifest.signature_payload_json()?;
-    let signature = signing_key.sign(payload.as_slice());
-    Some(ExtensionManifestSignature {
-        key_id: key_id.to_string(),
-        algorithm: "ed25519".to_string(),
-        value: BASE64_STANDARD.encode(signature.to_bytes()),
-    })
-}
-
-fn sign_manifest_with_builtin_key(
-    manifest: &ExtensionManifest,
-) -> Option<ExtensionManifestSignature> {
-    let signing_key = default_manifest_signing_key();
-    sign_manifest_with_key(manifest, FORGE_BUILTIN_MANIFEST_KEY_ID, &signing_key)
+fn builtin_manifest_verifying_key() -> Option<VerifyingKey> {
+    let decoded = BASE64_STANDARD
+        .decode(FORGE_BUILTIN_MANIFEST_VERIFYING_KEY_BASE64.as_bytes())
+        .ok()?;
+    let bytes: [u8; 32] = decoded.as_slice().try_into().ok()?;
+    VerifyingKey::from_bytes(&bytes).ok()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -821,7 +806,7 @@ impl ExtensionHost {
 
 pub fn default_extension_host() -> ExtensionHost {
     let mut host = ExtensionHost::new();
-    let mut viewer_manifest = ExtensionManifest {
+    let viewer_manifest = ExtensionManifest {
         id: "viewer-session-inspector".to_string(),
         display_name: "Session Inspector".to_string(),
         publisher: FORGE_BUILTIN_MANIFEST_PUBLISHER.to_string(),
@@ -839,13 +824,16 @@ pub fn default_extension_host() -> ExtensionHost {
         requested_permissions: Vec::new(),
         declared_capabilities: vec!["session.inspect".to_string()],
         declared_side_effects: vec!["none".to_string()],
-        signature: None,
+        signature: Some(ExtensionManifestSignature {
+            key_id: FORGE_BUILTIN_MANIFEST_KEY_ID.to_string(),
+            algorithm: "ed25519".to_string(),
+            value: FORGE_BUILTIN_VIEWER_SIGNATURE_BASE64.to_string(),
+        }),
         revoked: false,
     };
-    viewer_manifest.signature = sign_manifest_with_builtin_key(&viewer_manifest);
     let _ = host.register(viewer_manifest);
 
-    let mut provider_manifest = ExtensionManifest {
+    let provider_manifest = ExtensionManifest {
         id: "provider-openai".to_string(),
         display_name: "OpenAI Provider Adapter".to_string(),
         publisher: FORGE_BUILTIN_MANIFEST_PUBLISHER.to_string(),
@@ -869,10 +857,13 @@ pub fn default_extension_host() -> ExtensionHost {
             "provider.confidential_relay".to_string(),
         ],
         declared_side_effects: vec!["network-egress".to_string()],
-        signature: None,
+        signature: Some(ExtensionManifestSignature {
+            key_id: FORGE_BUILTIN_MANIFEST_KEY_ID.to_string(),
+            algorithm: "ed25519".to_string(),
+            value: FORGE_BUILTIN_PROVIDER_SIGNATURE_BASE64.to_string(),
+        }),
         revoked: false,
     };
-    provider_manifest.signature = sign_manifest_with_builtin_key(&provider_manifest);
     let _ = host.register(provider_manifest);
     host
 }
@@ -880,15 +871,49 @@ pub fn default_extension_host() -> ExtensionHost {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExtensionClass, ExtensionHost, ExtensionHostError, ExtensionManifest, ExtensionPermission,
-        ExtensionState, default_extension_host,
+        ExtensionClass, ExtensionHost, ExtensionHostError, ExtensionManifest,
+        ExtensionManifestSignature, ExtensionPermission, ExtensionState, TrustedManifestSigner,
+        default_extension_host,
     };
+    use base64::Engine as _;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    const TEST_MANIFEST_KEY_ID: &str = "test-ed25519";
+    const TEST_MANIFEST_PUBLISHER: &str = "forge-test";
+
+    fn test_manifest_signing_key() -> SigningKey {
+        SigningKey::from_bytes(&[
+            0x99, 0x04, 0x1a, 0x2b, 0x74, 0x88, 0x5d, 0x03, 0x18, 0xa4, 0xcd, 0x56, 0xf0, 0x32,
+            0x0f, 0x44, 0x5e, 0x6a, 0x9d, 0x11, 0x70, 0x1c, 0xe8, 0x05, 0xb3, 0x63, 0x27, 0xfa,
+            0x80, 0x9c, 0xde, 0x6b,
+        ])
+    }
+
+    fn register_test_manifest_signer(host: &mut ExtensionHost) {
+        let signing_key = test_manifest_signing_key();
+        host.register_trusted_manifest_signer(TrustedManifestSigner {
+            key_id: TEST_MANIFEST_KEY_ID.to_string(),
+            publisher: TEST_MANIFEST_PUBLISHER.to_string(),
+            verifying_key: signing_key.verifying_key(),
+        });
+    }
+
+    fn sign_manifest_for_tests(manifest: &ExtensionManifest) -> Option<ExtensionManifestSignature> {
+        let payload = manifest.signature_payload_json()?;
+        let signing_key = test_manifest_signing_key();
+        let signature = signing_key.sign(payload.as_slice());
+        Some(ExtensionManifestSignature {
+            key_id: TEST_MANIFEST_KEY_ID.to_string(),
+            algorithm: "ed25519".to_string(),
+            value: super::BASE64_STANDARD.encode(signature.to_bytes()),
+        })
+    }
 
     fn provider_manifest() -> ExtensionManifest {
         let mut manifest = ExtensionManifest {
             id: "provider".to_string(),
             display_name: "Provider".to_string(),
-            publisher: super::FORGE_BUILTIN_MANIFEST_PUBLISHER.to_string(),
+            publisher: TEST_MANIFEST_PUBLISHER.to_string(),
             version: "1.0.0".to_string(),
             minimum_forge_version: "0.1.0".to_string(),
             package_checksum_sha256:
@@ -909,13 +934,14 @@ mod tests {
             signature: None,
             revoked: false,
         };
-        manifest.signature = super::sign_manifest_with_builtin_key(&manifest);
+        manifest.signature = sign_manifest_for_tests(&manifest);
         manifest
     }
 
     #[test]
     fn enabling_requires_requested_permissions() {
         let mut host = ExtensionHost::new();
+        register_test_manifest_signer(&mut host);
         assert!(host.register(provider_manifest()).is_ok());
 
         let enable = host.set_enabled("provider", true);
@@ -950,6 +976,7 @@ mod tests {
     #[test]
     fn enabling_unsigned_manifest_is_blocked() {
         let mut host = ExtensionHost::new();
+        register_test_manifest_signer(&mut host);
         let mut manifest = provider_manifest();
         manifest.signature = None;
         assert!(host.register(manifest).is_ok());
@@ -970,6 +997,7 @@ mod tests {
     #[test]
     fn enabling_manifest_with_unknown_signer_key_is_blocked() {
         let mut host = ExtensionHost::new();
+        register_test_manifest_signer(&mut host);
         let mut manifest = provider_manifest();
         let signature = manifest.signature.clone();
         assert!(signature.is_some());
@@ -997,6 +1025,7 @@ mod tests {
     #[test]
     fn enabling_manifest_with_tampered_signature_payload_is_blocked() {
         let mut host = ExtensionHost::new();
+        register_test_manifest_signer(&mut host);
         let mut manifest = provider_manifest();
         manifest.display_name = "Provider (tampered)".to_string();
         assert!(host.register(manifest).is_ok());
@@ -1017,6 +1046,7 @@ mod tests {
     #[test]
     fn enabling_revoked_manifest_is_blocked() {
         let mut host = ExtensionHost::new();
+        register_test_manifest_signer(&mut host);
         let mut manifest = provider_manifest();
         manifest.revoked = true;
         assert!(host.register(manifest).is_ok());
@@ -1037,6 +1067,7 @@ mod tests {
     #[test]
     fn enabling_manifest_with_newer_minimum_forge_version_is_blocked() {
         let mut host = ExtensionHost::with_forge_version("0.1.0");
+        register_test_manifest_signer(&mut host);
         let mut manifest = provider_manifest();
         manifest.minimum_forge_version = "9.0.0".to_string();
         assert!(host.register(manifest).is_ok());
@@ -1057,6 +1088,7 @@ mod tests {
     #[test]
     fn isolate_blocks_reenable_until_recovered() {
         let mut host = ExtensionHost::new();
+        register_test_manifest_signer(&mut host);
         assert!(host.register(provider_manifest()).is_ok());
         assert!(host.grant_all_permissions("provider").is_ok());
         assert!(host.set_enabled("provider", true).is_ok());
@@ -1099,6 +1131,7 @@ mod tests {
     #[test]
     fn revoke_all_permissions_resets_enable_eligibility() {
         let mut host = ExtensionHost::new();
+        register_test_manifest_signer(&mut host);
         assert!(host.register(provider_manifest()).is_ok());
         assert!(host.grant_all_permissions("provider").is_ok());
 
@@ -1124,6 +1157,7 @@ mod tests {
     #[test]
     fn permission_grants_reflect_granted_and_revoked_state() {
         let mut host = ExtensionHost::new();
+        register_test_manifest_signer(&mut host);
         assert!(host.register(provider_manifest()).is_ok());
         assert!(host.grant_all_permissions("provider").is_ok());
         assert!(host.revoke_all_permissions("provider").is_ok());
