@@ -6,6 +6,7 @@ pub mod extension_host;
 pub mod feature_policy;
 pub mod io_policy;
 pub mod lmdb_metadata;
+pub mod mcp_bridge;
 pub mod project_memory;
 pub mod scheduler;
 

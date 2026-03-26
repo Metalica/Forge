@@ -1,8 +1,11 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL_SAFE_NO_PAD;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use rand::RngCore;
+use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 
@@ -14,6 +17,7 @@ const FORGE_BUILTIN_VIEWER_SIGNATURE_BASE64: &str =
     "2t65gf6EXW2qWKg+zd1oqNX3YF57bMtwwohUEzr4QGnZjGZwPOm7ej22FrMAU9Ca6iIe1RhQsMwSt4XQxdthCQ==";
 const FORGE_BUILTIN_PROVIDER_SIGNATURE_BASE64: &str =
     "NGtxyV67AtWHKp867w0e1ktT+A7JVBvxobEKXMO9c58YvJL4pM9yDpxaFD8MkXwupbiKC8uxNLndqDmDjetKCg==";
+const MCP_SCOPED_TOKEN_BYTES: usize = 32;
 
 #[derive(Debug, Clone)]
 pub struct TrustedManifestSigner {
@@ -67,6 +71,200 @@ impl ExtensionPermission {
         }
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpToolPolicy {
+    pub tool_name: String,
+    pub required_scope: String,
+    pub audience: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpScopedToken {
+    pub token: String,
+    pub extension_id: String,
+    pub session_id: String,
+    pub audience: String,
+    pub scopes: Vec<String>,
+    pub issued_at_unix_ms: u64,
+    pub expires_at_unix_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct McpTokenLease {
+    extension_id: String,
+    session_id: String,
+    audience: String,
+    scopes: Vec<String>,
+    issued_at_unix_ms: u64,
+    expires_at_unix_ms: u64,
+    revoked: bool,
+}
+
+impl McpTokenLease {
+    fn to_snapshot(&self, token: String) -> McpScopedToken {
+        McpScopedToken {
+            token,
+            extension_id: self.extension_id.clone(),
+            session_id: self.session_id.clone(),
+            audience: self.audience.clone(),
+            scopes: self.scopes.clone(),
+            issued_at_unix_ms: self.issued_at_unix_ms,
+            expires_at_unix_ms: self.expires_at_unix_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpAuthorizedToolCall {
+    pub extension_id: String,
+    pub session_id: String,
+    pub tool_name: String,
+    pub audience: String,
+    pub required_scope: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpToolPolicyError {
+    InvalidToolName,
+    InvalidScope,
+    InvalidAudience,
+}
+
+impl fmt::Display for McpToolPolicyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            McpToolPolicyError::InvalidToolName => f.write_str("MCP tool name cannot be empty"),
+            McpToolPolicyError::InvalidScope => f.write_str("MCP required scope cannot be empty"),
+            McpToolPolicyError::InvalidAudience => f.write_str("MCP audience cannot be empty"),
+        }
+    }
+}
+
+impl Error for McpToolPolicyError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpTokenIssueError {
+    ExtensionNotFound(String),
+    ExtensionNotEnabled(String),
+    InvalidSessionId,
+    InvalidAudience,
+    InvalidScope,
+    InvalidTtl,
+    ScopeNotDeclared {
+        extension_id: String,
+        scope: String,
+    },
+    NoMatchingToolPolicy {
+        audience: String,
+        scopes: Vec<String>,
+    },
+}
+
+impl fmt::Display for McpTokenIssueError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            McpTokenIssueError::ExtensionNotFound(id) => {
+                write!(f, "extension not found: {id}")
+            }
+            McpTokenIssueError::ExtensionNotEnabled(id) => {
+                write!(f, "extension is not enabled: {id}")
+            }
+            McpTokenIssueError::InvalidSessionId => f.write_str("MCP session_id cannot be empty"),
+            McpTokenIssueError::InvalidAudience => f.write_str("MCP audience cannot be empty"),
+            McpTokenIssueError::InvalidScope => f.write_str("MCP scopes cannot be empty"),
+            McpTokenIssueError::InvalidTtl => {
+                f.write_str("MCP token ttl_ms must be greater than zero")
+            }
+            McpTokenIssueError::ScopeNotDeclared {
+                extension_id,
+                scope,
+            } => write!(
+                f,
+                "MCP scope `{scope}` is not declared by extension {extension_id}"
+            ),
+            McpTokenIssueError::NoMatchingToolPolicy { audience, scopes } => write!(
+                f,
+                "no MCP tool policy matches audience `{audience}` for scopes [{}]",
+                scopes.join(", ")
+            ),
+        }
+    }
+}
+
+impl Error for McpTokenIssueError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpTokenAuthorizationError {
+    InvalidToken,
+    InvalidToolName,
+    InvalidAudience,
+    ToolPolicyNotFound(String),
+    PolicyAudienceMismatch {
+        tool_name: String,
+        expected: String,
+        actual: String,
+    },
+    TokenAudienceMismatch {
+        expected: String,
+        actual: String,
+    },
+    TokenExpired {
+        expires_at_unix_ms: u64,
+        now_unix_ms: u64,
+    },
+    TokenRevoked,
+    ScopeMissing {
+        required_scope: String,
+    },
+    ExtensionInactive(String),
+}
+
+impl fmt::Display for McpTokenAuthorizationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            McpTokenAuthorizationError::InvalidToken => f.write_str("MCP token is unknown"),
+            McpTokenAuthorizationError::InvalidToolName => {
+                f.write_str("MCP tool name cannot be empty")
+            }
+            McpTokenAuthorizationError::InvalidAudience => {
+                f.write_str("MCP audience cannot be empty")
+            }
+            McpTokenAuthorizationError::ToolPolicyNotFound(tool_name) => {
+                write!(f, "MCP tool policy not found for tool `{tool_name}`")
+            }
+            McpTokenAuthorizationError::PolicyAudienceMismatch {
+                tool_name,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "MCP audience mismatch for tool `{tool_name}` expected={expected} actual={actual}"
+            ),
+            McpTokenAuthorizationError::TokenAudienceMismatch { expected, actual } => write!(
+                f,
+                "MCP token audience mismatch expected={expected} actual={actual}"
+            ),
+            McpTokenAuthorizationError::TokenExpired {
+                expires_at_unix_ms,
+                now_unix_ms,
+            } => write!(
+                f,
+                "MCP token expired at {expires_at_unix_ms} (now={now_unix_ms})"
+            ),
+            McpTokenAuthorizationError::TokenRevoked => f.write_str("MCP token has been revoked"),
+            McpTokenAuthorizationError::ScopeMissing { required_scope } => {
+                write!(f, "MCP token is missing required scope `{required_scope}`")
+            }
+            McpTokenAuthorizationError::ExtensionInactive(id) => write!(
+                f,
+                "extension is not enabled for MCP token authorization: {id}"
+            ),
+        }
+    }
+}
+
+impl Error for McpTokenAuthorizationError {}
 
 fn is_high_risk_extension_permission(permission: ExtensionPermission) -> bool {
     matches!(
@@ -151,6 +349,38 @@ fn parse_semver_core(version: &str) -> Option<(u32, u32, u32)> {
 
 fn is_sha256_hex(value: &str) -> bool {
     value.len() == 64 && value.chars().all(|candidate| candidate.is_ascii_hexdigit())
+}
+
+fn normalize_non_empty_label(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+fn normalize_mcp_scope_set(scopes: &[String]) -> Option<Vec<String>> {
+    let mut normalized = scopes
+        .iter()
+        .filter_map(|value| normalize_non_empty_label(value))
+        .collect::<Vec<_>>();
+    normalized.sort();
+    normalized.dedup();
+    if normalized.is_empty() {
+        return None;
+    }
+    Some(normalized)
+}
+
+fn normalize_mcp_tool_key(tool_name: &str) -> Option<String> {
+    normalize_non_empty_label(tool_name).map(|value| value.to_ascii_lowercase())
+}
+
+fn mint_mcp_scoped_token_secret() -> String {
+    let mut token_bytes = [0u8; MCP_SCOPED_TOKEN_BYTES];
+    let mut rng = OsRng;
+    rng.fill_bytes(&mut token_bytes);
+    BASE64_URL_SAFE_NO_PAD.encode(token_bytes)
 }
 
 fn default_manifest_signers() -> HashMap<String, TrustedManifestSigner> {
@@ -564,6 +794,8 @@ pub enum ExtensionHostError {
 #[derive(Debug)]
 pub struct ExtensionHost {
     extensions: HashMap<String, ExtensionRuntime>,
+    mcp_tool_policies: HashMap<String, McpToolPolicy>,
+    mcp_tokens: HashMap<String, McpTokenLease>,
     forge_version: String,
     trusted_manifest_signers: HashMap<String, TrustedManifestSigner>,
 }
@@ -588,6 +820,8 @@ impl ExtensionHost {
         };
         Self {
             extensions: HashMap::new(),
+            mcp_tool_policies: HashMap::new(),
+            mcp_tokens: HashMap::new(),
             forge_version: normalized,
             trusted_manifest_signers: default_manifest_signers(),
         }
@@ -602,9 +836,250 @@ impl ExtensionHost {
         if let Err(error) = manifest.validate() {
             return Err(ExtensionHostError::InvalidManifest(error.to_string()));
         }
+        self.revoke_mcp_tokens_for_extension(manifest.id.as_str());
         self.extensions
             .insert(manifest.id.clone(), ExtensionRuntime::new(manifest));
         Ok(())
+    }
+
+    fn revoke_mcp_tokens_for_extension(&mut self, extension_id: &str) -> usize {
+        let mut revoked = 0usize;
+        for lease in self.mcp_tokens.values_mut() {
+            if lease.extension_id == extension_id && !lease.revoked {
+                lease.revoked = true;
+                revoked = revoked.saturating_add(1);
+            }
+        }
+        revoked
+    }
+
+    fn extension_declared_scope_set(runtime: &ExtensionRuntime) -> HashSet<String> {
+        runtime
+            .manifest
+            .declared_capabilities
+            .iter()
+            .filter_map(|value| normalize_non_empty_label(value))
+            .collect::<HashSet<_>>()
+    }
+
+    pub fn set_mcp_tool_policy(
+        &mut self,
+        tool_name: &str,
+        required_scope: &str,
+        audience: &str,
+    ) -> Result<(), McpToolPolicyError> {
+        let Some(tool_key) = normalize_mcp_tool_key(tool_name) else {
+            return Err(McpToolPolicyError::InvalidToolName);
+        };
+        let Some(normalized_scope) = normalize_non_empty_label(required_scope) else {
+            return Err(McpToolPolicyError::InvalidScope);
+        };
+        let Some(normalized_audience) = normalize_non_empty_label(audience) else {
+            return Err(McpToolPolicyError::InvalidAudience);
+        };
+        self.mcp_tool_policies.insert(
+            tool_key,
+            McpToolPolicy {
+                tool_name: tool_name.trim().to_string(),
+                required_scope: normalized_scope,
+                audience: normalized_audience,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn remove_mcp_tool_policy(&mut self, tool_name: &str) -> bool {
+        let Some(tool_key) = normalize_mcp_tool_key(tool_name) else {
+            return false;
+        };
+        self.mcp_tool_policies.remove(tool_key.as_str()).is_some()
+    }
+
+    pub fn mcp_tool_policy(&self, tool_name: &str) -> Option<McpToolPolicy> {
+        let tool_key = normalize_mcp_tool_key(tool_name)?;
+        self.mcp_tool_policies.get(tool_key.as_str()).cloned()
+    }
+
+    pub fn issue_mcp_scoped_token(
+        &mut self,
+        extension_id: &str,
+        session_id: &str,
+        audience: &str,
+        scopes: Vec<String>,
+        ttl_ms: u64,
+        now_unix_ms: u64,
+    ) -> Result<McpScopedToken, McpTokenIssueError> {
+        let Some(normalized_session_id) = normalize_non_empty_label(session_id) else {
+            return Err(McpTokenIssueError::InvalidSessionId);
+        };
+        let Some(normalized_audience) = normalize_non_empty_label(audience) else {
+            return Err(McpTokenIssueError::InvalidAudience);
+        };
+        if ttl_ms == 0 {
+            return Err(McpTokenIssueError::InvalidTtl);
+        }
+        let Some(normalized_scopes) = normalize_mcp_scope_set(scopes.as_slice()) else {
+            return Err(McpTokenIssueError::InvalidScope);
+        };
+
+        let runtime = self
+            .extensions
+            .get(extension_id)
+            .ok_or_else(|| McpTokenIssueError::ExtensionNotFound(extension_id.to_string()))?;
+        if !matches!(runtime.state, ExtensionState::Enabled) {
+            return Err(McpTokenIssueError::ExtensionNotEnabled(
+                extension_id.to_string(),
+            ));
+        }
+
+        let declared_scopes = Self::extension_declared_scope_set(runtime);
+        for scope in &normalized_scopes {
+            if !declared_scopes.contains(scope) {
+                return Err(McpTokenIssueError::ScopeNotDeclared {
+                    extension_id: extension_id.to_string(),
+                    scope: scope.clone(),
+                });
+            }
+        }
+
+        let matches_policy = self.mcp_tool_policies.values().any(|policy| {
+            policy.audience == normalized_audience
+                && normalized_scopes
+                    .iter()
+                    .any(|scope| scope == &policy.required_scope)
+        });
+        if !matches_policy {
+            return Err(McpTokenIssueError::NoMatchingToolPolicy {
+                audience: normalized_audience.clone(),
+                scopes: normalized_scopes.clone(),
+            });
+        }
+
+        let token = mint_mcp_scoped_token_secret();
+        let expires_at_unix_ms = now_unix_ms.saturating_add(ttl_ms);
+        let lease = McpTokenLease {
+            extension_id: extension_id.to_string(),
+            session_id: normalized_session_id,
+            audience: normalized_audience,
+            scopes: normalized_scopes,
+            issued_at_unix_ms: now_unix_ms,
+            expires_at_unix_ms,
+            revoked: false,
+        };
+        self.mcp_tokens.insert(token.clone(), lease.clone());
+        self.prune_expired_mcp_tokens(now_unix_ms);
+        Ok(lease.to_snapshot(token))
+    }
+
+    pub fn authorize_mcp_tool_call(
+        &self,
+        token: &str,
+        tool_name: &str,
+        audience: &str,
+        now_unix_ms: u64,
+    ) -> Result<McpAuthorizedToolCall, McpTokenAuthorizationError> {
+        let Some(trimmed_token) = normalize_non_empty_label(token) else {
+            return Err(McpTokenAuthorizationError::InvalidToken);
+        };
+        let Some(tool_key) = normalize_mcp_tool_key(tool_name) else {
+            return Err(McpTokenAuthorizationError::InvalidToolName);
+        };
+        let Some(normalized_audience) = normalize_non_empty_label(audience) else {
+            return Err(McpTokenAuthorizationError::InvalidAudience);
+        };
+
+        let policy = self
+            .mcp_tool_policies
+            .get(tool_key.as_str())
+            .ok_or_else(|| {
+                McpTokenAuthorizationError::ToolPolicyNotFound(tool_name.trim().to_string())
+            })?;
+        if policy.audience != normalized_audience {
+            return Err(McpTokenAuthorizationError::PolicyAudienceMismatch {
+                tool_name: policy.tool_name.clone(),
+                expected: policy.audience.clone(),
+                actual: normalized_audience.clone(),
+            });
+        }
+
+        let lease = self
+            .mcp_tokens
+            .get(trimmed_token.as_str())
+            .ok_or(McpTokenAuthorizationError::InvalidToken)?;
+        if lease.revoked {
+            return Err(McpTokenAuthorizationError::TokenRevoked);
+        }
+        if now_unix_ms >= lease.expires_at_unix_ms {
+            return Err(McpTokenAuthorizationError::TokenExpired {
+                expires_at_unix_ms: lease.expires_at_unix_ms,
+                now_unix_ms,
+            });
+        }
+        if lease.audience != normalized_audience {
+            return Err(McpTokenAuthorizationError::TokenAudienceMismatch {
+                expected: lease.audience.clone(),
+                actual: normalized_audience,
+            });
+        }
+
+        let Some(runtime) = self.extensions.get(lease.extension_id.as_str()) else {
+            return Err(McpTokenAuthorizationError::ExtensionInactive(
+                lease.extension_id.clone(),
+            ));
+        };
+        if !matches!(runtime.state, ExtensionState::Enabled) {
+            return Err(McpTokenAuthorizationError::ExtensionInactive(
+                lease.extension_id.clone(),
+            ));
+        }
+        if !lease
+            .scopes
+            .iter()
+            .any(|scope| scope == &policy.required_scope)
+        {
+            return Err(McpTokenAuthorizationError::ScopeMissing {
+                required_scope: policy.required_scope.clone(),
+            });
+        }
+        if !runtime
+            .manifest
+            .declared_capabilities
+            .iter()
+            .any(|scope| scope.trim() == policy.required_scope)
+        {
+            return Err(McpTokenAuthorizationError::ScopeMissing {
+                required_scope: policy.required_scope.clone(),
+            });
+        }
+
+        Ok(McpAuthorizedToolCall {
+            extension_id: lease.extension_id.clone(),
+            session_id: lease.session_id.clone(),
+            tool_name: policy.tool_name.clone(),
+            audience: policy.audience.clone(),
+            required_scope: policy.required_scope.clone(),
+        })
+    }
+
+    pub fn revoke_mcp_session_tokens(&mut self, session_id: &str) -> usize {
+        let Some(normalized_session_id) = normalize_non_empty_label(session_id) else {
+            return 0;
+        };
+        let mut revoked = 0usize;
+        for lease in self.mcp_tokens.values_mut() {
+            if lease.session_id == normalized_session_id && !lease.revoked {
+                lease.revoked = true;
+                revoked = revoked.saturating_add(1);
+            }
+        }
+        revoked
+    }
+
+    pub fn prune_expired_mcp_tokens(&mut self, now_unix_ms: u64) -> usize {
+        let before = self.mcp_tokens.len();
+        self.mcp_tokens
+            .retain(|_, lease| lease.expires_at_unix_ms > now_unix_ms);
+        before.saturating_sub(self.mcp_tokens.len())
     }
 
     pub fn get(&self, id: &str) -> Option<&ExtensionRuntime> {
@@ -764,6 +1239,7 @@ impl ExtensionHost {
             }
         }
 
+        let mut revoke_mcp_tokens = false;
         let runtime = self
             .extensions
             .get_mut(id)
@@ -775,6 +1251,12 @@ impl ExtensionHost {
             runtime.state = ExtensionState::Enabled;
         } else if matches!(runtime.state, ExtensionState::Enabled) {
             runtime.state = ExtensionState::Disabled;
+            revoke_mcp_tokens = true;
+        } else {
+            revoke_mcp_tokens = true;
+        }
+        if revoke_mcp_tokens {
+            let _ = self.revoke_mcp_tokens_for_extension(id);
         }
         Ok(())
     }
@@ -790,6 +1272,7 @@ impl ExtensionHost {
             .ok_or_else(|| ExtensionHostError::NotFound(id.to_string()))?;
         runtime.state = ExtensionState::FailedIsolated;
         runtime.last_error = Some(reason.into());
+        let _ = self.revoke_mcp_tokens_for_extension(id);
         Ok(())
     }
 
@@ -1374,5 +1857,212 @@ mod tests {
             None => return,
         };
         assert!(overbroad.overbroad_approved);
+    }
+
+    #[test]
+    fn mcp_scoped_token_authorization_enforces_scope_and_audience() {
+        let mut host = ExtensionHost::new();
+        register_test_manifest_signer(&mut host);
+        assert!(host.register(provider_manifest()).is_ok());
+        assert!(host.grant_all_permissions("provider").is_ok());
+        assert!(host.set_enabled("provider", true).is_ok());
+        assert!(
+            host.set_mcp_tool_policy("chat.send", "provider.chat", "mcp://tools/chat")
+                .is_ok()
+        );
+
+        let issued = host.issue_mcp_scoped_token(
+            "provider",
+            "session-alpha",
+            "mcp://tools/chat",
+            vec!["provider.chat".to_string()],
+            10_000,
+            1_000,
+        );
+        assert!(issued.is_ok());
+        let issued = match issued {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+
+        let authorized = host.authorize_mcp_tool_call(
+            issued.token.as_str(),
+            "chat.send",
+            "mcp://tools/chat",
+            1_500,
+        );
+        assert!(authorized.is_ok());
+        let authorized = match authorized {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        assert_eq!(authorized.extension_id, "provider");
+        assert_eq!(authorized.session_id, "session-alpha");
+        assert_eq!(authorized.required_scope, "provider.chat");
+
+        let audience_mismatch = host.authorize_mcp_tool_call(
+            issued.token.as_str(),
+            "chat.send",
+            "mcp://tools/other",
+            1_500,
+        );
+        assert!(audience_mismatch.is_err());
+        let audience_mismatch = match audience_mismatch {
+            Ok(_) => return,
+            Err(value) => value,
+        };
+        assert!(matches!(
+            audience_mismatch,
+            super::McpTokenAuthorizationError::PolicyAudienceMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn mcp_token_issue_blocks_undeclared_scopes() {
+        let mut host = ExtensionHost::new();
+        register_test_manifest_signer(&mut host);
+        assert!(host.register(provider_manifest()).is_ok());
+        assert!(host.grant_all_permissions("provider").is_ok());
+        assert!(host.set_enabled("provider", true).is_ok());
+        assert!(
+            host.set_mcp_tool_policy("chat.send", "provider.chat", "mcp://tools/chat")
+                .is_ok()
+        );
+
+        let issued = host.issue_mcp_scoped_token(
+            "provider",
+            "session-alpha",
+            "mcp://tools/chat",
+            vec!["provider.unknown".to_string()],
+            10_000,
+            1_000,
+        );
+        assert!(issued.is_err());
+        let issued = match issued {
+            Ok(_) => return,
+            Err(value) => value,
+        };
+        assert!(matches!(
+            issued,
+            super::McpTokenIssueError::ScopeNotDeclared { .. }
+        ));
+    }
+
+    #[test]
+    fn mcp_session_revocation_blocks_authorization() {
+        let mut host = ExtensionHost::new();
+        register_test_manifest_signer(&mut host);
+        assert!(host.register(provider_manifest()).is_ok());
+        assert!(host.grant_all_permissions("provider").is_ok());
+        assert!(host.set_enabled("provider", true).is_ok());
+        assert!(
+            host.set_mcp_tool_policy("chat.send", "provider.chat", "mcp://tools/chat")
+                .is_ok()
+        );
+
+        let issued = host.issue_mcp_scoped_token(
+            "provider",
+            "session-revoke",
+            "mcp://tools/chat",
+            vec!["provider.chat".to_string()],
+            10_000,
+            1_000,
+        );
+        assert!(issued.is_ok());
+        let issued = match issued {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+
+        let revoked = host.revoke_mcp_session_tokens("session-revoke");
+        assert_eq!(revoked, 1);
+
+        let authorized = host.authorize_mcp_tool_call(
+            issued.token.as_str(),
+            "chat.send",
+            "mcp://tools/chat",
+            1_200,
+        );
+        assert!(authorized.is_err());
+        let authorized = match authorized {
+            Ok(_) => return,
+            Err(value) => value,
+        };
+        assert!(matches!(
+            authorized,
+            super::McpTokenAuthorizationError::TokenRevoked
+        ));
+    }
+
+    #[test]
+    fn disabling_extension_revokes_mcp_tokens() {
+        let mut host = ExtensionHost::new();
+        register_test_manifest_signer(&mut host);
+        assert!(host.register(provider_manifest()).is_ok());
+        assert!(host.grant_all_permissions("provider").is_ok());
+        assert!(host.set_enabled("provider", true).is_ok());
+        assert!(
+            host.set_mcp_tool_policy("chat.send", "provider.chat", "mcp://tools/chat")
+                .is_ok()
+        );
+
+        let issued = host.issue_mcp_scoped_token(
+            "provider",
+            "session-disable",
+            "mcp://tools/chat",
+            vec!["provider.chat".to_string()],
+            10_000,
+            1_000,
+        );
+        assert!(issued.is_ok());
+        let issued = match issued {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+
+        assert!(host.set_enabled("provider", false).is_ok());
+
+        let authorized = host.authorize_mcp_tool_call(
+            issued.token.as_str(),
+            "chat.send",
+            "mcp://tools/chat",
+            1_500,
+        );
+        assert!(authorized.is_err());
+        let authorized = match authorized {
+            Ok(_) => return,
+            Err(value) => value,
+        };
+        assert!(matches!(
+            authorized,
+            super::McpTokenAuthorizationError::TokenRevoked
+        ));
+    }
+
+    #[test]
+    fn mcp_issue_requires_matching_tool_policy() {
+        let mut host = ExtensionHost::new();
+        register_test_manifest_signer(&mut host);
+        assert!(host.register(provider_manifest()).is_ok());
+        assert!(host.grant_all_permissions("provider").is_ok());
+        assert!(host.set_enabled("provider", true).is_ok());
+
+        let issued = host.issue_mcp_scoped_token(
+            "provider",
+            "session-alpha",
+            "mcp://tools/chat",
+            vec!["provider.chat".to_string()],
+            10_000,
+            1_000,
+        );
+        assert!(issued.is_err());
+        let issued = match issued {
+            Ok(_) => return,
+            Err(value) => value,
+        };
+        assert!(matches!(
+            issued,
+            super::McpTokenIssueError::NoMatchingToolPolicy { .. }
+        ));
     }
 }
