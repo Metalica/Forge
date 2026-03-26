@@ -1098,19 +1098,33 @@ impl ExtensionHost {
         permission: ExtensionPermission,
         granted: bool,
     ) -> Result<(), ExtensionHostError> {
-        let runtime = self
-            .extensions
-            .get_mut(id)
-            .ok_or_else(|| ExtensionHostError::NotFound(id.to_string()))?;
-        if runtime
-            .manifest
-            .requested_permissions
-            .iter()
-            .all(|candidate| *candidate != permission)
+        let mut revoke_mcp_tokens = false;
         {
-            return Ok(());
+            let runtime = self
+                .extensions
+                .get_mut(id)
+                .ok_or_else(|| ExtensionHostError::NotFound(id.to_string()))?;
+            if runtime
+                .manifest
+                .requested_permissions
+                .iter()
+                .all(|candidate| *candidate != permission)
+            {
+                return Ok(());
+            }
+            runtime.granted_permissions.insert(permission, granted);
+            if !granted && matches!(runtime.state, ExtensionState::Enabled) {
+                runtime.state = ExtensionState::Disabled;
+                runtime.last_error = Some(format!(
+                    "permission {} revoked while enabled; extension disabled fail-closed",
+                    permission.label()
+                ));
+                revoke_mcp_tokens = true;
+            }
         }
-        runtime.granted_permissions.insert(permission, granted);
+        if revoke_mcp_tokens {
+            let _ = self.revoke_mcp_tokens_for_extension(id);
+        }
         Ok(())
     }
 
@@ -1127,13 +1141,26 @@ impl ExtensionHost {
     }
 
     pub fn revoke_all_permissions(&mut self, id: &str) -> Result<(), ExtensionHostError> {
-        let runtime = self
-            .extensions
-            .get_mut(id)
-            .ok_or_else(|| ExtensionHostError::NotFound(id.to_string()))?;
-        let requested = runtime.manifest.requested_permissions.clone();
-        for permission in requested {
-            runtime.granted_permissions.insert(permission, false);
+        let mut revoke_mcp_tokens = false;
+        {
+            let runtime = self
+                .extensions
+                .get_mut(id)
+                .ok_or_else(|| ExtensionHostError::NotFound(id.to_string()))?;
+            let requested = runtime.manifest.requested_permissions.clone();
+            for permission in requested {
+                runtime.granted_permissions.insert(permission, false);
+            }
+            if matches!(runtime.state, ExtensionState::Enabled) {
+                runtime.state = ExtensionState::Disabled;
+                runtime.last_error = Some(
+                    "permissions revoked while enabled; extension disabled fail-closed".to_string(),
+                );
+                revoke_mcp_tokens = true;
+            }
+        }
+        if revoke_mcp_tokens {
+            let _ = self.revoke_mcp_tokens_for_extension(id);
         }
         Ok(())
     }
@@ -1201,11 +1228,28 @@ impl ExtensionHost {
         id: &str,
         approved: bool,
     ) -> Result<(), ExtensionHostError> {
-        let runtime = self
-            .extensions
-            .get_mut(id)
-            .ok_or_else(|| ExtensionHostError::NotFound(id.to_string()))?;
-        runtime.overbroad_approved = approved;
+        let mut revoke_mcp_tokens = false;
+        {
+            let runtime = self
+                .extensions
+                .get_mut(id)
+                .ok_or_else(|| ExtensionHostError::NotFound(id.to_string()))?;
+            runtime.overbroad_approved = approved;
+            if !approved
+                && runtime.manifest.requires_overbroad_approval()
+                && matches!(runtime.state, ExtensionState::Enabled)
+            {
+                runtime.state = ExtensionState::Disabled;
+                runtime.last_error = Some(
+                    "overbroad approval revoked while enabled; extension disabled fail-closed"
+                        .to_string(),
+                );
+                revoke_mcp_tokens = true;
+            }
+        }
+        if revoke_mcp_tokens {
+            let _ = self.revoke_mcp_tokens_for_extension(id);
+        }
         Ok(())
     }
 
@@ -1664,6 +1708,77 @@ mod tests {
     }
 
     #[test]
+    fn revoking_overbroad_approval_disables_extension_and_revokes_mcp_tokens() {
+        let mut host = ExtensionHost::new();
+        register_test_manifest_signer(&mut host);
+        assert!(host.register(overbroad_manifest()).is_ok());
+        assert!(host.grant_all_permissions("overbroad-tool").is_ok());
+        assert!(host.set_overbroad_approved("overbroad-tool", true).is_ok());
+        assert!(host.set_enabled("overbroad-tool", true).is_ok());
+        assert!(
+            host.set_mcp_tool_policy("tool.exec", "tool.exec", "mcp://tools/exec")
+                .is_ok()
+        );
+
+        let issued = host.issue_mcp_scoped_token(
+            "overbroad-tool",
+            "session-overbroad-revoke",
+            "mcp://tools/exec",
+            vec!["tool.exec".to_string()],
+            10_000,
+            1_000,
+        );
+        assert!(issued.is_ok());
+        let issued = match issued {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+
+        assert!(host.set_overbroad_approved("overbroad-tool", false).is_ok());
+        let runtime = host.get("overbroad-tool");
+        assert!(runtime.is_some());
+        let runtime = match runtime {
+            Some(value) => value,
+            None => return,
+        };
+        assert_eq!(runtime.state, ExtensionState::Disabled);
+        assert!(
+            runtime
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("overbroad approval revoked")
+        );
+
+        let denied = host.authorize_mcp_tool_call(
+            issued.token.as_str(),
+            "tool.exec",
+            "mcp://tools/exec",
+            1_100,
+        );
+        assert!(denied.is_err());
+        let denied = match denied {
+            Ok(_) => return,
+            Err(value) => value,
+        };
+        assert!(matches!(
+            denied,
+            super::McpTokenAuthorizationError::TokenRevoked
+        ));
+
+        let reenable = host.set_enabled("overbroad-tool", true);
+        assert!(reenable.is_err());
+        let reenable = match reenable {
+            Ok(_) => return,
+            Err(value) => value,
+        };
+        assert!(matches!(
+            reenable,
+            ExtensionHostError::OverbroadApprovalRequired { .. }
+        ));
+    }
+
+    #[test]
     fn enabling_revoked_manifest_is_blocked() {
         let mut host = ExtensionHost::new();
         register_test_manifest_signer(&mut host);
@@ -1772,6 +1887,127 @@ mod tests {
         };
         assert!(!revoked_check.can_enable);
         assert_eq!(revoked_check.missing_permissions.len(), 2);
+    }
+
+    #[test]
+    fn revoking_permission_while_enabled_disables_extension_and_revokes_tokens() {
+        let mut host = ExtensionHost::new();
+        register_test_manifest_signer(&mut host);
+        assert!(host.register(provider_manifest()).is_ok());
+        assert!(host.grant_all_permissions("provider").is_ok());
+        assert!(host.set_enabled("provider", true).is_ok());
+        assert!(
+            host.set_mcp_tool_policy("chat.send", "provider.chat", "mcp://tools/chat")
+                .is_ok()
+        );
+
+        let issued = host.issue_mcp_scoped_token(
+            "provider",
+            "session-permission-revoke",
+            "mcp://tools/chat",
+            vec!["provider.chat".to_string()],
+            10_000,
+            1_000,
+        );
+        assert!(issued.is_ok());
+        let issued = match issued {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+
+        assert!(
+            host.set_permission("provider", ExtensionPermission::Network, false)
+                .is_ok()
+        );
+        let runtime = host.get("provider");
+        assert!(runtime.is_some());
+        let runtime = match runtime {
+            Some(value) => value,
+            None => return,
+        };
+        assert_eq!(runtime.state, ExtensionState::Disabled);
+        assert!(
+            runtime
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("permission network revoked")
+        );
+
+        let denied = host.authorize_mcp_tool_call(
+            issued.token.as_str(),
+            "chat.send",
+            "mcp://tools/chat",
+            1_100,
+        );
+        assert!(denied.is_err());
+        let denied = match denied {
+            Ok(_) => return,
+            Err(value) => value,
+        };
+        assert!(matches!(
+            denied,
+            super::McpTokenAuthorizationError::TokenRevoked
+        ));
+    }
+
+    #[test]
+    fn revoking_all_permissions_while_enabled_disables_extension_and_revokes_tokens() {
+        let mut host = ExtensionHost::new();
+        register_test_manifest_signer(&mut host);
+        assert!(host.register(provider_manifest()).is_ok());
+        assert!(host.grant_all_permissions("provider").is_ok());
+        assert!(host.set_enabled("provider", true).is_ok());
+        assert!(
+            host.set_mcp_tool_policy("chat.send", "provider.chat", "mcp://tools/chat")
+                .is_ok()
+        );
+
+        let issued = host.issue_mcp_scoped_token(
+            "provider",
+            "session-bulk-revoke",
+            "mcp://tools/chat",
+            vec!["provider.chat".to_string()],
+            10_000,
+            1_000,
+        );
+        assert!(issued.is_ok());
+        let issued = match issued {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+
+        assert!(host.revoke_all_permissions("provider").is_ok());
+        let runtime = host.get("provider");
+        assert!(runtime.is_some());
+        let runtime = match runtime {
+            Some(value) => value,
+            None => return,
+        };
+        assert_eq!(runtime.state, ExtensionState::Disabled);
+        assert!(
+            runtime
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("permissions revoked while enabled")
+        );
+
+        let denied = host.authorize_mcp_tool_call(
+            issued.token.as_str(),
+            "chat.send",
+            "mcp://tools/chat",
+            1_100,
+        );
+        assert!(denied.is_err());
+        let denied = match denied {
+            Ok(_) => return,
+            Err(value) => value,
+        };
+        assert!(matches!(
+            denied,
+            super::McpTokenAuthorizationError::TokenRevoked
+        ));
     }
 
     #[test]
