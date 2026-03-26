@@ -50,9 +50,92 @@ impl ExtensionPermission {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtensionManifestSignature {
+    pub key_id: String,
+    pub algorithm: String,
+    pub value: String,
+}
+
+impl ExtensionManifestSignature {
+    fn is_complete(&self) -> bool {
+        !self.key_id.trim().is_empty()
+            && !self.algorithm.trim().is_empty()
+            && !self.value.trim().is_empty()
+    }
+}
+
+fn default_manifest_publisher() -> String {
+    "unknown".to_string()
+}
+
+fn default_manifest_version() -> String {
+    "0.0.0".to_string()
+}
+
+fn default_manifest_minimum_forge_version() -> String {
+    "0.0.0".to_string()
+}
+
+fn parse_semver_core(version: &str) -> Option<(u32, u32, u32)> {
+    let normalized = version.trim().trim_start_matches('v');
+    let core = normalized.split(['-', '+']).next()?.trim();
+    if core.is_empty() {
+        return None;
+    }
+    let mut parts = core.split('.');
+    let major = parts.next()?.parse::<u32>().ok()?;
+    let minor = parts.next().unwrap_or("0").parse::<u32>().ok()?;
+    let patch = parts.next().unwrap_or("0").parse::<u32>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.chars().all(|candidate| candidate.is_ascii_hexdigit())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtensionSecurityGateError {
+    UnsignedManifest,
+    RevokedManifest,
+    IncompatibleForgeVersion { minimum: String, current: String },
+    MissingMetadata(&'static str),
+}
+
+impl fmt::Display for ExtensionSecurityGateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ExtensionSecurityGateError::UnsignedManifest => {
+                f.write_str("unsigned manifest blocked")
+            }
+            ExtensionSecurityGateError::RevokedManifest => {
+                f.write_str("manifest revoked by publisher")
+            }
+            ExtensionSecurityGateError::IncompatibleForgeVersion { minimum, current } => write!(
+                f,
+                "requires Forge version {minimum} or newer (current={current})"
+            ),
+            ExtensionSecurityGateError::MissingMetadata(field) => {
+                write!(f, "manifest missing required metadata: {field}")
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExtensionManifest {
     pub id: String,
     pub display_name: String,
+    #[serde(default = "default_manifest_publisher")]
+    pub publisher: String,
+    #[serde(default = "default_manifest_version")]
+    pub version: String,
+    #[serde(default = "default_manifest_minimum_forge_version")]
+    pub minimum_forge_version: String,
+    #[serde(default)]
+    pub package_checksum_sha256: String,
     pub class: ExtensionClass,
     pub idle_cost_mb: u32,
     pub startup_cost_ms: u32,
@@ -61,6 +144,14 @@ pub struct ExtensionManifest {
     pub requires_network: bool,
     pub background_activity: String,
     pub requested_permissions: Vec<ExtensionPermission>,
+    #[serde(default)]
+    pub declared_capabilities: Vec<String>,
+    #[serde(default)]
+    pub declared_side_effects: Vec<String>,
+    #[serde(default)]
+    pub signature: Option<ExtensionManifestSignature>,
+    #[serde(default)]
+    pub revoked: bool,
 }
 
 impl ExtensionManifest {
@@ -89,6 +180,74 @@ impl ExtensionManifest {
             return Err(ExtensionManifestValidationError::new(
                 "extension background_activity cannot be empty",
             ));
+        }
+        if self.requires_network
+            && self
+                .requested_permissions
+                .iter()
+                .all(|permission| *permission != ExtensionPermission::Network)
+        {
+            return Err(ExtensionManifestValidationError::new(
+                "extension requires_network=true but network permission is not requested",
+            ));
+        }
+        Ok(())
+    }
+
+    fn security_gate(&self, forge_version: &str) -> Result<(), ExtensionSecurityGateError> {
+        if self.revoked {
+            return Err(ExtensionSecurityGateError::RevokedManifest);
+        }
+        if self.publisher.trim().is_empty() {
+            return Err(ExtensionSecurityGateError::MissingMetadata("publisher"));
+        }
+        if self.version.trim().is_empty() {
+            return Err(ExtensionSecurityGateError::MissingMetadata("version"));
+        }
+        if self.minimum_forge_version.trim().is_empty() {
+            return Err(ExtensionSecurityGateError::MissingMetadata(
+                "minimum_forge_version",
+            ));
+        }
+        if self.package_checksum_sha256.trim().is_empty() {
+            return Err(ExtensionSecurityGateError::MissingMetadata(
+                "package_checksum_sha256",
+            ));
+        }
+        if !is_sha256_hex(self.package_checksum_sha256.trim()) {
+            return Err(ExtensionSecurityGateError::MissingMetadata(
+                "package_checksum_sha256",
+            ));
+        }
+        if self.declared_capabilities.is_empty() {
+            return Err(ExtensionSecurityGateError::MissingMetadata(
+                "declared_capabilities",
+            ));
+        }
+        if self.declared_side_effects.is_empty() {
+            return Err(ExtensionSecurityGateError::MissingMetadata(
+                "declared_side_effects",
+            ));
+        }
+        let signature = match self.signature.as_ref() {
+            Some(value) if value.is_complete() => value,
+            _ => return Err(ExtensionSecurityGateError::UnsignedManifest),
+        };
+        if !signature.algorithm.eq_ignore_ascii_case("ed25519") {
+            return Err(ExtensionSecurityGateError::MissingMetadata(
+                "signature.algorithm",
+            ));
+        }
+        let minimum = parse_semver_core(self.minimum_forge_version.as_str()).ok_or(
+            ExtensionSecurityGateError::MissingMetadata("minimum_forge_version"),
+        )?;
+        let current = parse_semver_core(forge_version)
+            .ok_or(ExtensionSecurityGateError::MissingMetadata("forge_version"))?;
+        if current < minimum {
+            return Err(ExtensionSecurityGateError::IncompatibleForgeVersion {
+                minimum: self.minimum_forge_version.clone(),
+                current: forge_version.to_string(),
+            });
         }
         Ok(())
     }
@@ -178,20 +337,44 @@ pub enum ExtensionHostError {
     NotFound(String),
     InvalidManifest(String),
     FailedIsolated(String),
+    SecurityPolicyBlocked {
+        extension_id: String,
+        reason: String,
+    },
     MissingPermissions {
         extension_id: String,
         missing: Vec<ExtensionPermission>,
     },
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ExtensionHost {
     extensions: HashMap<String, ExtensionRuntime>,
+    forge_version: String,
+}
+
+impl Default for ExtensionHost {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ExtensionHost {
     pub fn new() -> Self {
-        Self::default()
+        Self::with_forge_version(env!("CARGO_PKG_VERSION"))
+    }
+
+    pub fn with_forge_version(forge_version: impl Into<String>) -> Self {
+        let normalized = forge_version.into();
+        let normalized = if normalized.trim().is_empty() {
+            "0.0.0".to_string()
+        } else {
+            normalized
+        };
+        Self {
+            extensions: HashMap::new(),
+            forge_version: normalized,
+        }
     }
 
     pub fn register(&mut self, manifest: ExtensionManifest) -> Result<(), ExtensionHostError> {
@@ -311,6 +494,16 @@ impl ExtensionHost {
 
     pub fn set_enabled(&mut self, id: &str, enabled: bool) -> Result<(), ExtensionHostError> {
         if enabled {
+            let runtime = self
+                .extensions
+                .get(id)
+                .ok_or_else(|| ExtensionHostError::NotFound(id.to_string()))?;
+            if let Err(error) = runtime.manifest.security_gate(self.forge_version.as_str()) {
+                return Err(ExtensionHostError::SecurityPolicyBlocked {
+                    extension_id: id.to_string(),
+                    reason: error.to_string(),
+                });
+            }
             let check = self.permission_check(id)?;
             if !check.can_enable {
                 return Err(ExtensionHostError::MissingPermissions {
@@ -442,6 +635,11 @@ pub fn default_extension_host() -> ExtensionHost {
     let _ = host.register(ExtensionManifest {
         id: "viewer-session-inspector".to_string(),
         display_name: "Session Inspector".to_string(),
+        publisher: "forge-core".to_string(),
+        version: "1.0.0".to_string(),
+        minimum_forge_version: "0.1.0".to_string(),
+        package_checksum_sha256: "1111111111111111111111111111111111111111111111111111111111111111"
+            .to_string(),
         class: ExtensionClass::Viewer,
         idle_cost_mb: 24,
         startup_cost_ms: 40,
@@ -450,10 +648,23 @@ pub fn default_extension_host() -> ExtensionHost {
         requires_network: false,
         background_activity: "none".to_string(),
         requested_permissions: Vec::new(),
+        declared_capabilities: vec!["session.inspect".to_string()],
+        declared_side_effects: vec!["none".to_string()],
+        signature: Some(ExtensionManifestSignature {
+            key_id: "forge-builtin-ed25519".to_string(),
+            algorithm: "ed25519".to_string(),
+            value: "builtin-signature-viewer-session-inspector-v1".to_string(),
+        }),
+        revoked: false,
     });
     let _ = host.register(ExtensionManifest {
         id: "provider-openai".to_string(),
         display_name: "OpenAI Provider Adapter".to_string(),
+        publisher: "forge-core".to_string(),
+        version: "1.0.0".to_string(),
+        minimum_forge_version: "0.1.0".to_string(),
+        package_checksum_sha256: "2222222222222222222222222222222222222222222222222222222222222222"
+            .to_string(),
         class: ExtensionClass::ModelProvider,
         idle_cost_mb: 35,
         startup_cost_ms: 90,
@@ -465,6 +676,17 @@ pub fn default_extension_host() -> ExtensionHost {
             ExtensionPermission::Network,
             ExtensionPermission::ExternalApis,
         ],
+        declared_capabilities: vec![
+            "provider.chat".to_string(),
+            "provider.confidential_relay".to_string(),
+        ],
+        declared_side_effects: vec!["network-egress".to_string()],
+        signature: Some(ExtensionManifestSignature {
+            key_id: "forge-builtin-ed25519".to_string(),
+            algorithm: "ed25519".to_string(),
+            value: "builtin-signature-provider-openai-v1".to_string(),
+        }),
+        revoked: false,
     });
     host
 }
@@ -472,14 +694,19 @@ pub fn default_extension_host() -> ExtensionHost {
 #[cfg(test)]
 mod tests {
     use super::{
-        ExtensionClass, ExtensionHost, ExtensionHostError, ExtensionManifest, ExtensionPermission,
-        ExtensionState, default_extension_host,
+        ExtensionClass, ExtensionHost, ExtensionHostError, ExtensionManifest,
+        ExtensionManifestSignature, ExtensionPermission, ExtensionState, default_extension_host,
     };
 
     fn provider_manifest() -> ExtensionManifest {
         ExtensionManifest {
             id: "provider".to_string(),
             display_name: "Provider".to_string(),
+            publisher: "forge-test".to_string(),
+            version: "1.0.0".to_string(),
+            minimum_forge_version: "0.1.0".to_string(),
+            package_checksum_sha256:
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
             class: ExtensionClass::ModelProvider,
             idle_cost_mb: 30,
             startup_cost_ms: 45,
@@ -491,6 +718,14 @@ mod tests {
                 ExtensionPermission::Network,
                 ExtensionPermission::ExternalApis,
             ],
+            declared_capabilities: vec!["provider.chat".to_string()],
+            declared_side_effects: vec!["network-egress".to_string()],
+            signature: Some(ExtensionManifestSignature {
+                key_id: "forge-test-ed25519".to_string(),
+                algorithm: "ed25519".to_string(),
+                value: "test-signature-provider-v1".to_string(),
+            }),
+            revoked: false,
         }
     }
 
@@ -526,6 +761,66 @@ mod tests {
             None => return,
         };
         assert_eq!(runtime.state, ExtensionState::Enabled);
+    }
+
+    #[test]
+    fn enabling_unsigned_manifest_is_blocked() {
+        let mut host = ExtensionHost::new();
+        let mut manifest = provider_manifest();
+        manifest.signature = None;
+        assert!(host.register(manifest).is_ok());
+        assert!(host.grant_all_permissions("provider").is_ok());
+
+        let enable = host.set_enabled("provider", true);
+        assert!(enable.is_err());
+        let error = match enable {
+            Ok(_) => return,
+            Err(value) => value,
+        };
+        assert!(matches!(
+            error,
+            ExtensionHostError::SecurityPolicyBlocked { .. }
+        ));
+    }
+
+    #[test]
+    fn enabling_revoked_manifest_is_blocked() {
+        let mut host = ExtensionHost::new();
+        let mut manifest = provider_manifest();
+        manifest.revoked = true;
+        assert!(host.register(manifest).is_ok());
+        assert!(host.grant_all_permissions("provider").is_ok());
+
+        let enable = host.set_enabled("provider", true);
+        assert!(enable.is_err());
+        let error = match enable {
+            Ok(_) => return,
+            Err(value) => value,
+        };
+        assert!(matches!(
+            error,
+            ExtensionHostError::SecurityPolicyBlocked { .. }
+        ));
+    }
+
+    #[test]
+    fn enabling_manifest_with_newer_minimum_forge_version_is_blocked() {
+        let mut host = ExtensionHost::with_forge_version("0.1.0");
+        let mut manifest = provider_manifest();
+        manifest.minimum_forge_version = "9.0.0".to_string();
+        assert!(host.register(manifest).is_ok());
+        assert!(host.grant_all_permissions("provider").is_ok());
+
+        let enable = host.set_enabled("provider", true);
+        assert!(enable.is_err());
+        let error = match enable {
+            Ok(_) => return,
+            Err(value) => value,
+        };
+        assert!(matches!(
+            error,
+            ExtensionHostError::SecurityPolicyBlocked { .. }
+        ));
     }
 
     #[test]

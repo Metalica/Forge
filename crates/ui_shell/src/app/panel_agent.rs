@@ -1272,12 +1272,22 @@ fn format_extension_inventory_detail(host: &ExtensionHost) -> String {
     }
     let mut lines = Vec::new();
     for entry in entries {
+        let signature_status = if entry.manifest.signature.is_some() {
+            "signed"
+        } else {
+            "unsigned"
+        };
         lines.push(format!(
-            "- {} ({}) state={} class={} budget={}MB cpu_budget={}% idle={}MB startup={}ms perms=[{}]",
+            "- {} ({}) state={} class={} publisher={} version={} min_forge={} signature={} revoked={} budget={}MB cpu_budget={}% idle={}MB startup={}ms perms=[{}]",
             entry.manifest.id,
             entry.manifest.display_name,
             format_extension_state(entry.state),
             entry.manifest.class.label(),
+            entry.manifest.publisher,
+            entry.manifest.version,
+            entry.manifest.minimum_forge_version,
+            signature_status,
+            entry.manifest.revoked,
             entry.manifest.memory_budget_mb,
             entry.manifest.cpu_budget_percent,
             entry.manifest.idle_cost_mb,
@@ -1327,12 +1337,27 @@ fn format_extension_target_detail(host: &ExtensionHost, target: &str) -> String 
             clip_text(&format_extension_host_error(trimmed, &error), 80)
         ),
     };
+    let signature_status = match entry.manifest.signature.as_ref() {
+        Some(signature) => format!(
+            "signed key_id={} algorithm={}",
+            signature.key_id, signature.algorithm
+        ),
+        None => "unsigned".to_string(),
+    };
     format!(
-        "id={id}\nname={name}\nstate={state}\nclass={class}\nmemory_budget_mb={memory_budget}\ncpu_budget_percent={cpu_budget}\nrequires_network={network}\nbackground_activity={activity}\nrequested_permissions=[{permissions}]\ngranted_permissions=[{granted_permissions}]\n{permission_line}\nlast_error={last_error}",
+        "id={id}\nname={name}\nstate={state}\nclass={class}\npublisher={publisher}\nversion={version}\nminimum_forge_version={minimum_forge_version}\npackage_checksum_sha256={checksum}\nsignature={signature_status}\nrevoked={revoked}\ncapabilities=[{capabilities}]\nside_effects=[{side_effects}]\nmemory_budget_mb={memory_budget}\ncpu_budget_percent={cpu_budget}\nrequires_network={network}\nbackground_activity={activity}\nrequested_permissions=[{permissions}]\ngranted_permissions=[{granted_permissions}]\n{permission_line}\nlast_error={last_error}",
         id = entry.manifest.id,
         name = entry.manifest.display_name,
         state = format_extension_state(entry.state),
         class = entry.manifest.class.label(),
+        publisher = entry.manifest.publisher,
+        version = entry.manifest.version,
+        minimum_forge_version = entry.manifest.minimum_forge_version,
+        checksum = entry.manifest.package_checksum_sha256,
+        signature_status = signature_status,
+        revoked = entry.manifest.revoked,
+        capabilities = format_string_list(&entry.manifest.declared_capabilities),
+        side_effects = format_string_list(&entry.manifest.declared_side_effects),
         memory_budget = entry.manifest.memory_budget_mb,
         cpu_budget = entry.manifest.cpu_budget_percent,
         network = entry.manifest.requires_network,
@@ -1366,6 +1391,21 @@ fn format_permission_list(permissions: &[ExtensionPermission]) -> String {
         .join(",")
 }
 
+fn format_string_list(values: &[String]) -> String {
+    if values.is_empty() {
+        return "none".to_string();
+    }
+    let cleaned = values
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if cleaned.is_empty() {
+        return "none".to_string();
+    }
+    cleaned.join(",")
+}
+
 fn format_extension_host_error(target: &str, error: &ExtensionHostError) -> String {
     match error {
         ExtensionHostError::NotFound(id) => format!("extension not found: {}", clip_text(id, 80)),
@@ -1375,6 +1415,14 @@ fn format_extension_host_error(target: &str, error: &ExtensionHostError) -> Stri
         ExtensionHostError::FailedIsolated(id) => {
             format!("extension {id} is isolated; recover before enable")
         }
+        ExtensionHostError::SecurityPolicyBlocked {
+            extension_id,
+            reason,
+        } => format!(
+            "extension {} blocked by manifest security policy: {}",
+            extension_id,
+            clip_text(reason, 120)
+        ),
         ExtensionHostError::MissingPermissions {
             extension_id,
             missing,

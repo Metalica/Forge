@@ -2482,6 +2482,11 @@ mod tests {
         let register = host.register(ExtensionManifest {
             id: "provider-x".to_string(),
             display_name: "Provider X".to_string(),
+            publisher: "forge-tests".to_string(),
+            version: "1.0.0".to_string(),
+            minimum_forge_version: "0.1.0".to_string(),
+            package_checksum_sha256:
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
             class: ExtensionClass::ModelProvider,
             idle_cost_mb: 20,
             startup_cost_ms: 30,
@@ -2493,6 +2498,14 @@ mod tests {
                 ExtensionPermission::Network,
                 ExtensionPermission::ExternalApis,
             ],
+            declared_capabilities: vec!["provider.chat".to_string()],
+            declared_side_effects: vec!["network-egress".to_string()],
+            signature: Some(control_plane::extension_host::ExtensionManifestSignature {
+                key_id: "forge-tests-ed25519".to_string(),
+                algorithm: "ed25519".to_string(),
+                value: "signature-provider-x-v1".to_string(),
+            }),
+            revoked: false,
         });
         assert!(register.is_ok());
 
