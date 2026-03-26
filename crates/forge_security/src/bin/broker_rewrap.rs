@@ -1,5 +1,7 @@
 use forge_security::broker::{
-    EnvAesKekAdapter, EnvArgon2idKekAdapter, KekAdapter, rotate_encrypted_store_kek,
+    EnvAesKekAdapter, EnvArgon2idKekAdapter, KekAdapter, LinuxKekCustodyChainAdapter,
+    LinuxKernelKeyringKekAdapter, LinuxSecretServiceKekAdapter, LinuxTpm2KekAdapter,
+    rotate_encrypted_store_kek,
 };
 use std::env;
 use std::error::Error;
@@ -10,6 +12,10 @@ use std::path::PathBuf;
 enum KekMode {
     EnvAes,
     EnvArgon2id,
+    LinuxTpm2,
+    LinuxKeyring,
+    LinuxSecretService,
+    LinuxCustodyChain,
 }
 
 impl KekMode {
@@ -17,8 +23,12 @@ impl KekMode {
         match value.trim().to_ascii_lowercase().as_str() {
             "env-aes" => Ok(Self::EnvAes),
             "env-argon2id" => Ok(Self::EnvArgon2id),
+            "linux-tpm2" => Ok(Self::LinuxTpm2),
+            "linux-keyring" => Ok(Self::LinuxKeyring),
+            "linux-secret-service" => Ok(Self::LinuxSecretService),
+            "linux-custody-chain" => Ok(Self::LinuxCustodyChain),
             _ => Err(BrokerRewrapError::new(format!(
-                "invalid KEK mode {value}; expected one of: env-aes, env-argon2id"
+                "invalid KEK mode {value}; expected one of: env-aes, env-argon2id, linux-tpm2, linux-keyring, linux-secret-service, linux-custody-chain"
             ))),
         }
     }
@@ -31,6 +41,8 @@ struct RewrapArgs {
     from_kek_id: String,
     from_kek_env: String,
     from_kek_salt_env: Option<String>,
+    from_kek_keyring_ref: Option<String>,
+    from_kek_secret_service_ref: Option<String>,
     to_kek_mode: KekMode,
     to_kek_id: String,
     to_kek_env: String,
@@ -71,6 +83,8 @@ impl RewrapArgs {
         let mut from_kek_id = None::<String>;
         let mut from_kek_env = None::<String>;
         let mut from_kek_salt_env = None::<String>;
+        let mut from_kek_keyring_ref = None::<String>;
+        let mut from_kek_secret_service_ref = None::<String>;
         let mut to_kek_mode = KekMode::EnvAes;
         let mut to_kek_id = None::<String>;
         let mut to_kek_env = None::<String>;
@@ -90,6 +104,8 @@ impl RewrapArgs {
                 "--from-kek-id" => from_kek_id = Some(value),
                 "--from-kek-env" => from_kek_env = Some(value),
                 "--from-kek-salt-env" => from_kek_salt_env = Some(value),
+                "--from-kek-keyring-ref" => from_kek_keyring_ref = Some(value),
+                "--from-kek-secret-service-ref" => from_kek_secret_service_ref = Some(value),
                 "--to-kek-mode" => to_kek_mode = KekMode::parse(&value)?,
                 "--to-kek-id" => to_kek_id = Some(value),
                 "--to-kek-env" => to_kek_env = Some(value),
@@ -133,10 +149,26 @@ impl RewrapArgs {
                 Self::usage()
             )));
         }
-        if from_kek_mode == KekMode::EnvAes && from_kek_salt_env.is_some() {
+        if from_kek_mode != KekMode::EnvArgon2id && from_kek_salt_env.is_some() {
             return Err(BrokerRewrapError::new(
                 "--from-kek-salt-env is only valid when --from-kek-mode env-argon2id",
             ));
+        }
+        if from_kek_mode != KekMode::LinuxCustodyChain && from_kek_keyring_ref.is_some() {
+            return Err(BrokerRewrapError::new(
+                "--from-kek-keyring-ref is only valid when --from-kek-mode linux-custody-chain",
+            ));
+        }
+        if from_kek_mode != KekMode::LinuxCustodyChain && from_kek_secret_service_ref.is_some() {
+            return Err(BrokerRewrapError::new(
+                "--from-kek-secret-service-ref is only valid when --from-kek-mode linux-custody-chain",
+            ));
+        }
+        if from_kek_mode == KekMode::LinuxCustodyChain && from_kek_keyring_ref.is_none() {
+            return Err(BrokerRewrapError::new(format!(
+                "missing --from-kek-keyring-ref for --from-kek-mode linux-custody-chain\n\n{}",
+                Self::usage()
+            )));
         }
         if to_kek_mode != KekMode::EnvAes {
             return Err(BrokerRewrapError::new(
@@ -155,6 +187,8 @@ impl RewrapArgs {
             from_kek_id,
             from_kek_env,
             from_kek_salt_env,
+            from_kek_keyring_ref,
+            from_kek_secret_service_ref,
             to_kek_mode,
             to_kek_id,
             to_kek_env,
@@ -164,11 +198,12 @@ impl RewrapArgs {
 
     fn usage() -> String {
         "Usage:
-  broker_rewrap --store <path> --from-kek-mode <env-aes|env-argon2id> --from-kek-id <id> --from-kek-env <ENV_VAR> [--from-kek-salt-env <ENV_VAR>] --to-kek-mode <env-aes> --to-kek-id <id> --to-kek-env <ENV_VAR>
+  broker_rewrap --store <path> --from-kek-mode <env-aes|env-argon2id|linux-tpm2|linux-keyring|linux-secret-service|linux-custody-chain> --from-kek-id <id> --from-kek-env <REF> [--from-kek-salt-env <ENV_VAR>] [--from-kek-keyring-ref <REF>] [--from-kek-secret-service-ref <REF>] --to-kek-mode <env-aes> --to-kek-id <id> --to-kek-env <ENV_VAR>
 
 Examples:
   cargo run -p forge_security --bin broker_rewrap -- --store E:/Forge/.tmp/broker.json --from-kek-mode env-aes --from-kek-id kek-v1 --from-kek-env FORGE_KEK_OLD --to-kek-mode env-aes --to-kek-id kek-v2 --to-kek-env FORGE_KEK_NEW
-  cargo run -p forge_security --bin broker_rewrap -- --store E:/Forge/.tmp/broker.json --from-kek-mode env-argon2id --from-kek-id legacy-argon --from-kek-env FORGE_KEK_PASSPHRASE --from-kek-salt-env FORGE_KEK_SALT --to-kek-mode env-aes --to-kek-id kek-v2 --to-kek-env FORGE_KEK_NEW".to_string()
+  cargo run -p forge_security --bin broker_rewrap -- --store E:/Forge/.tmp/broker.json --from-kek-mode env-argon2id --from-kek-id legacy-argon --from-kek-env FORGE_KEK_PASSPHRASE --from-kek-salt-env FORGE_KEK_SALT --to-kek-mode env-aes --to-kek-id kek-v2 --to-kek-env FORGE_KEK_NEW
+  cargo run -p forge_security --bin broker_rewrap -- --store E:/Forge/.tmp/broker.json --from-kek-mode linux-custody-chain --from-kek-id kek-linux --from-kek-env /etc/forge/tpm2-sealed.ctx --from-kek-keyring-ref 123456 --from-kek-secret-service-ref forge-main --to-kek-mode env-aes --to-kek-id kek-v2 --to-kek-env FORGE_KEK_NEW".to_string()
     }
 }
 
@@ -212,6 +247,34 @@ fn build_source_kek_adapter(args: &RewrapArgs) -> Result<Box<dyn KekAdapter>, Br
                 args.from_kek_id.clone(),
                 args.from_kek_env.clone(),
                 salt_env,
+            )
+            .map(|adapter| Box::new(adapter) as Box<dyn KekAdapter>)
+            .map_err(|error| BrokerRewrapError::new(error.to_string()))
+        }
+        KekMode::LinuxTpm2 => {
+            LinuxTpm2KekAdapter::new(args.from_kek_id.clone(), args.from_kek_env.clone())
+                .map(|adapter| Box::new(adapter) as Box<dyn KekAdapter>)
+                .map_err(|error| BrokerRewrapError::new(error.to_string()))
+        }
+        KekMode::LinuxKeyring => {
+            LinuxKernelKeyringKekAdapter::new(args.from_kek_id.clone(), args.from_kek_env.clone())
+                .map(|adapter| Box::new(adapter) as Box<dyn KekAdapter>)
+                .map_err(|error| BrokerRewrapError::new(error.to_string()))
+        }
+        KekMode::LinuxSecretService => {
+            LinuxSecretServiceKekAdapter::new(args.from_kek_id.clone(), args.from_kek_env.clone())
+                .map(|adapter| Box::new(adapter) as Box<dyn KekAdapter>)
+                .map_err(|error| BrokerRewrapError::new(error.to_string()))
+        }
+        KekMode::LinuxCustodyChain => {
+            let keyring_ref = args.from_kek_keyring_ref.clone().ok_or_else(|| {
+                BrokerRewrapError::new("missing source keyring reference for custody chain mode")
+            })?;
+            LinuxKekCustodyChainAdapter::new(
+                args.from_kek_id.clone(),
+                args.from_kek_env.clone(),
+                keyring_ref,
+                args.from_kek_secret_service_ref.clone(),
             )
             .map(|adapter| Box::new(adapter) as Box<dyn KekAdapter>)
             .map_err(|error| BrokerRewrapError::new(error.to_string()))

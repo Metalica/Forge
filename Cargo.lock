@@ -1220,6 +1220,7 @@ dependencies = [
  "argon2",
  "base64",
  "rand",
+ "seckey",
  "serde",
  "serde_json",
 ]
@@ -1962,6 +1963,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "714098028fe011992e1c3962653c96b2d578c4b4bce9036e15ff220319b1e0e3"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "memsec"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fa0916b001582d253822171bd23f4a0229d32b9507fae236f5da8cad515ba7c"
+dependencies = [
+ "getrandom 0.2.17",
+ "libc",
+ "windows-sys 0.45.0",
 ]
 
 [[package]]
@@ -2938,6 +2950,15 @@ dependencies = [
  "memmap2",
  "smithay-client-toolkit 0.18.1",
  "tiny-skia",
+]
+
+[[package]]
+name = "seckey"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd64b8649b6038d9ea27fde99aeded1c5571c00af18a6bc54ed6c1e01d7d2083"
+dependencies = [
+ "memsec",
 ]
 
 [[package]]

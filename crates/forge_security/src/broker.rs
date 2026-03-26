@@ -5,12 +5,16 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use rand::RngCore;
 use rand::rngs::OsRng;
+use seckey::SecBytes;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::fs;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
+use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -111,15 +115,75 @@ impl ResolvedSecret {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 struct SecretRecord {
     label: String,
-    secret_bytes: Vec<u8>,
+    secret_bytes: SecretBytesBuffer,
     memory_locked: bool,
     created_at_unix_ms: u64,
     updated_at_unix_ms: u64,
     access_count: u64,
     revoked: bool,
+}
+
+#[derive(Debug)]
+enum SecretBytesBuffer {
+    Locked(SecBytes),
+    Plain(Vec<u8>),
+}
+
+impl SecretBytesBuffer {
+    fn from_string(secret: String) -> (Self, bool) {
+        Self::from_bytes(secret.into_bytes())
+    }
+
+    fn from_bytes(bytes: Vec<u8>) -> (Self, bool) {
+        if bytes.is_empty() {
+            return (Self::Plain(Vec::new()), false);
+        }
+        let locked = catch_unwind(AssertUnwindSafe(|| {
+            SecBytes::with(bytes.len(), |target| {
+                target.copy_from_slice(bytes.as_slice())
+            })
+        }));
+        match locked {
+            Ok(locked_bytes) => {
+                let mut bytes = bytes;
+                clear_bytes(bytes.as_mut_slice());
+                (Self::Locked(locked_bytes), true)
+            }
+            Err(_) => (Self::Plain(bytes), false),
+        }
+    }
+
+    fn to_vec(&self) -> Vec<u8> {
+        match self {
+            Self::Locked(locked) => {
+                let read = locked.read();
+                read.to_vec()
+            }
+            Self::Plain(bytes) => bytes.clone(),
+        }
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::Locked(locked) => locked.read().is_empty(),
+            Self::Plain(bytes) => bytes.is_empty(),
+        }
+    }
+
+    fn clear(&mut self) {
+        match self {
+            Self::Locked(locked) => {
+                let mut write = locked.write();
+                clear_bytes(write.as_mut());
+            }
+            Self::Plain(bytes) => clear_bytes(bytes.as_mut_slice()),
+        }
+        *self = Self::Plain(Vec::new());
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -426,6 +490,249 @@ impl KekAdapter for EnvArgon2idKekAdapter {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinuxTpm2KekAdapter {
+    key_id: String,
+    sealed_object_context_path: String,
+}
+
+impl LinuxTpm2KekAdapter {
+    pub fn new(
+        key_id: impl Into<String>,
+        sealed_object_context_path: impl Into<String>,
+    ) -> Result<Self, SecretBrokerError> {
+        let key_id = key_id.into();
+        let sealed_object_context_path = sealed_object_context_path.into();
+        if key_id.trim().is_empty() {
+            return Err(SecretBrokerError::new("kek key_id cannot be empty"));
+        }
+        if sealed_object_context_path.trim().is_empty() {
+            return Err(SecretBrokerError::new(
+                "tpm2 sealed object context path cannot be empty",
+            ));
+        }
+        Ok(Self {
+            key_id,
+            sealed_object_context_path,
+        })
+    }
+
+    fn resolve_delegate(&self) -> Result<StaticAesKekAdapter, SecretBrokerError> {
+        let mut key_bytes = resolve_kek_bytes_via_linux_command(
+            "tpm2_unseal",
+            ["-Q", "-c", self.sealed_object_context_path.as_str()].as_slice(),
+            "tpm2_unseal",
+        )?;
+        let adapter = StaticAesKekAdapter::new(self.key_id.clone(), key_bytes);
+        clear_bytes(key_bytes.as_mut_slice());
+        adapter
+    }
+}
+
+impl KekAdapter for LinuxTpm2KekAdapter {
+    fn kek_id(&self) -> &str {
+        &self.key_id
+    }
+
+    fn wrap_key(&self, dek: &[u8; 32]) -> Result<Vec<u8>, SecretBrokerError> {
+        self.resolve_delegate()?.wrap_key(dek)
+    }
+
+    fn unwrap_key(&self, wrapped_dek: &[u8]) -> Result<[u8; 32], SecretBrokerError> {
+        self.resolve_delegate()?.unwrap_key(wrapped_dek)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinuxKernelKeyringKekAdapter {
+    key_id: String,
+    key_serial: String,
+}
+
+impl LinuxKernelKeyringKekAdapter {
+    pub fn new(
+        key_id: impl Into<String>,
+        key_serial: impl Into<String>,
+    ) -> Result<Self, SecretBrokerError> {
+        let key_id = key_id.into();
+        let key_serial = key_serial.into();
+        if key_id.trim().is_empty() {
+            return Err(SecretBrokerError::new("kek key_id cannot be empty"));
+        }
+        if key_serial.trim().is_empty() {
+            return Err(SecretBrokerError::new(
+                "kernel keyring key serial cannot be empty",
+            ));
+        }
+        Ok(Self { key_id, key_serial })
+    }
+
+    fn resolve_delegate(&self) -> Result<StaticAesKekAdapter, SecretBrokerError> {
+        let mut key_bytes = resolve_kek_bytes_via_linux_command(
+            "keyctl",
+            ["pipe", self.key_serial.as_str()].as_slice(),
+            "keyctl pipe",
+        )?;
+        let adapter = StaticAesKekAdapter::new(self.key_id.clone(), key_bytes);
+        clear_bytes(key_bytes.as_mut_slice());
+        adapter
+    }
+}
+
+impl KekAdapter for LinuxKernelKeyringKekAdapter {
+    fn kek_id(&self) -> &str {
+        &self.key_id
+    }
+
+    fn wrap_key(&self, dek: &[u8; 32]) -> Result<Vec<u8>, SecretBrokerError> {
+        self.resolve_delegate()?.wrap_key(dek)
+    }
+
+    fn unwrap_key(&self, wrapped_dek: &[u8]) -> Result<[u8; 32], SecretBrokerError> {
+        self.resolve_delegate()?.unwrap_key(wrapped_dek)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinuxSecretServiceKekAdapter {
+    key_id: String,
+    lookup_value: String,
+}
+
+impl LinuxSecretServiceKekAdapter {
+    pub fn new(
+        key_id: impl Into<String>,
+        lookup_value: impl Into<String>,
+    ) -> Result<Self, SecretBrokerError> {
+        let key_id = key_id.into();
+        let lookup_value = lookup_value.into();
+        if key_id.trim().is_empty() {
+            return Err(SecretBrokerError::new("kek key_id cannot be empty"));
+        }
+        if lookup_value.trim().is_empty() {
+            return Err(SecretBrokerError::new(
+                "secret service lookup value cannot be empty",
+            ));
+        }
+        Ok(Self {
+            key_id,
+            lookup_value,
+        })
+    }
+
+    fn resolve_delegate(&self) -> Result<StaticAesKekAdapter, SecretBrokerError> {
+        let mut key_bytes = resolve_kek_bytes_via_linux_command(
+            "secret-tool",
+            ["lookup", "forge-kek-id", self.lookup_value.as_str()].as_slice(),
+            "secret-tool lookup",
+        )?;
+        let adapter = StaticAesKekAdapter::new(self.key_id.clone(), key_bytes);
+        clear_bytes(key_bytes.as_mut_slice());
+        adapter
+    }
+}
+
+impl KekAdapter for LinuxSecretServiceKekAdapter {
+    fn kek_id(&self) -> &str {
+        &self.key_id
+    }
+
+    fn wrap_key(&self, dek: &[u8; 32]) -> Result<Vec<u8>, SecretBrokerError> {
+        self.resolve_delegate()?.wrap_key(dek)
+    }
+
+    fn unwrap_key(&self, wrapped_dek: &[u8]) -> Result<[u8; 32], SecretBrokerError> {
+        self.resolve_delegate()?.unwrap_key(wrapped_dek)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinuxKekCustodyChainAdapter {
+    key_id: String,
+    tpm2_sealed_object_context_path: String,
+    keyring_serial: String,
+    secret_service_lookup_value: Option<String>,
+}
+
+impl LinuxKekCustodyChainAdapter {
+    pub fn new(
+        key_id: impl Into<String>,
+        tpm2_sealed_object_context_path: impl Into<String>,
+        keyring_serial: impl Into<String>,
+        secret_service_lookup_value: Option<String>,
+    ) -> Result<Self, SecretBrokerError> {
+        let key_id = key_id.into();
+        let tpm2_sealed_object_context_path = tpm2_sealed_object_context_path.into();
+        let keyring_serial = keyring_serial.into();
+        if key_id.trim().is_empty() {
+            return Err(SecretBrokerError::new("kek key_id cannot be empty"));
+        }
+        if tpm2_sealed_object_context_path.trim().is_empty() {
+            return Err(SecretBrokerError::new(
+                "tpm2 sealed object context path cannot be empty",
+            ));
+        }
+        if keyring_serial.trim().is_empty() {
+            return Err(SecretBrokerError::new(
+                "kernel keyring key serial cannot be empty",
+            ));
+        }
+        let secret_service_lookup_value = match secret_service_lookup_value {
+            Some(value) if value.trim().is_empty() => {
+                return Err(SecretBrokerError::new(
+                    "secret service lookup value cannot be empty when configured",
+                ));
+            }
+            Some(value) => Some(value),
+            None => None,
+        };
+        Ok(Self {
+            key_id,
+            tpm2_sealed_object_context_path,
+            keyring_serial,
+            secret_service_lookup_value,
+        })
+    }
+
+    fn resolve_delegate(&self) -> Result<StaticAesKekAdapter, SecretBrokerError> {
+        let tpm2 = LinuxTpm2KekAdapter::new(
+            self.key_id.clone(),
+            self.tpm2_sealed_object_context_path.clone(),
+        )?;
+        if let Ok(delegate) = tpm2.resolve_delegate() {
+            return Ok(delegate);
+        }
+        let keyring =
+            LinuxKernelKeyringKekAdapter::new(self.key_id.clone(), self.keyring_serial.clone())?;
+        if let Ok(delegate) = keyring.resolve_delegate() {
+            return Ok(delegate);
+        }
+        if let Some(lookup) = self.secret_service_lookup_value.clone() {
+            let secret_service = LinuxSecretServiceKekAdapter::new(self.key_id.clone(), lookup)?;
+            if let Ok(delegate) = secret_service.resolve_delegate() {
+                return Ok(delegate);
+            }
+        }
+        Err(SecretBrokerError::new(
+            "linux KEK custody chain exhausted (TPM2 -> keyring -> Secret Service)",
+        ))
+    }
+}
+
+impl KekAdapter for LinuxKekCustodyChainAdapter {
+    fn kek_id(&self) -> &str {
+        &self.key_id
+    }
+
+    fn wrap_key(&self, dek: &[u8; 32]) -> Result<Vec<u8>, SecretBrokerError> {
+        self.resolve_delegate()?.wrap_key(dek)
+    }
+
+    fn unwrap_key(&self, wrapped_dek: &[u8]) -> Result<[u8; 32], SecretBrokerError> {
+        self.resolve_delegate()?.unwrap_key(wrapped_dek)
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct SecretBroker {
     records: HashMap<SecretHandle, SecretRecord>,
@@ -476,8 +783,7 @@ impl SecretBroker {
             self.allocate_handle_suffix()
         ));
         let label_for_audit = label.clone();
-        let mut secret_bytes = secret.into_bytes();
-        let memory_locked = try_lock_secret_bytes(secret_bytes.as_mut_slice());
+        let (secret_bytes, memory_locked) = SecretBytesBuffer::from_string(secret);
 
         let record = SecretRecord {
             label,
@@ -519,8 +825,15 @@ impl SecretBroker {
             };
             record.access_count = record.access_count.saturating_add(1);
             record.updated_at_unix_ms = now_unix_ms();
-            let value = String::from_utf8(record.secret_bytes.clone())
-                .map_err(|_| SecretBrokerError::new("secret bytes are not valid UTF-8"))?;
+            let secret_bytes = record.secret_bytes.to_vec();
+            let value = match String::from_utf8(secret_bytes) {
+                Ok(value) => value,
+                Err(error) => {
+                    let mut bytes = error.into_bytes();
+                    clear_bytes(bytes.as_mut_slice());
+                    return Err(SecretBrokerError::new("secret bytes are not valid UTF-8"));
+                }
+            };
             (record.label.clone(), value)
         };
         self.record_audit_event(
@@ -616,23 +929,16 @@ impl SecretBroker {
         let label_for_audit = record.label.clone();
         let (action, detail) = match replacement_secret {
             Some(secret) => {
-                if record.memory_locked {
-                    let _ = try_unlock_secret_bytes(record.secret_bytes.as_mut_slice());
-                }
-                clear_bytes(&mut record.secret_bytes);
-                let mut next_secret = secret.into_bytes();
-                record.memory_locked = try_lock_secret_bytes(next_secret.as_mut_slice());
+                record.secret_bytes.clear();
+                let (next_secret, memory_locked) = SecretBytesBuffer::from_string(secret);
+                record.memory_locked = memory_locked;
                 record.secret_bytes = next_secret;
                 record.revoked = false;
                 (SecretAuditAction::RotateSecret, "secret rotated")
             }
             None => {
-                if record.memory_locked {
-                    let _ = try_unlock_secret_bytes(record.secret_bytes.as_mut_slice());
-                    record.memory_locked = false;
-                }
-                clear_bytes(&mut record.secret_bytes);
                 record.secret_bytes.clear();
+                record.memory_locked = false;
                 record.revoked = true;
                 (SecretAuditAction::RevokeSecret, "secret revoked")
             }
@@ -765,12 +1071,8 @@ impl SecretBroker {
 impl Drop for SecretBroker {
     fn drop(&mut self) {
         for record in self.records.values_mut() {
-            if record.memory_locked {
-                let _ = try_unlock_secret_bytes(record.secret_bytes.as_mut_slice());
-                record.memory_locked = false;
-            }
-            clear_bytes(record.secret_bytes.as_mut_slice());
             record.secret_bytes.clear();
+            record.memory_locked = false;
         }
     }
 }
@@ -860,15 +1162,21 @@ fn to_persisted_record(
     let aad = build_secret_aad(handle, record);
     let cipher = Aes256Gcm::new_from_slice(&dek)
         .map_err(|_| SecretBrokerError::new("secret cipher initialization failed"))?;
-    let ciphertext = cipher
-        .encrypt(
-            Nonce::from_slice(&nonce),
-            Payload {
-                msg: record.secret_bytes.as_slice(),
-                aad: aad.as_slice(),
-            },
-        )
-        .map_err(|_| SecretBrokerError::new("secret encryption failed"))?;
+    let mut secret_bytes = record.secret_bytes.to_vec();
+    let ciphertext = match cipher.encrypt(
+        Nonce::from_slice(&nonce),
+        Payload {
+            msg: secret_bytes.as_slice(),
+            aad: aad.as_slice(),
+        },
+    ) {
+        Ok(value) => value,
+        Err(_) => {
+            clear_bytes(secret_bytes.as_mut_slice());
+            return Err(SecretBrokerError::new("secret encryption failed"));
+        }
+    };
+    clear_bytes(secret_bytes.as_mut_slice());
 
     let wrapped_dek = kek.wrap_key(&dek)?;
     clear_bytes(&mut dek);
@@ -929,7 +1237,7 @@ fn from_persisted_store(
 
             let probe_record = SecretRecord {
                 label: entry.label.clone(),
-                secret_bytes: Vec::new(),
+                secret_bytes: SecretBytesBuffer::Plain(Vec::new()),
                 memory_locked: false,
                 created_at_unix_ms: entry.created_at_unix_ms,
                 updated_at_unix_ms: entry.updated_at_unix_ms,
@@ -953,7 +1261,7 @@ fn from_persisted_store(
             clear_bytes(&mut dek);
             secret_bytes = plaintext;
         }
-        let memory_locked = try_lock_secret_bytes(secret_bytes.as_mut_slice());
+        let (secret_bytes, memory_locked) = SecretBytesBuffer::from_bytes(secret_bytes);
 
         records.insert(
             handle,
@@ -974,6 +1282,82 @@ fn from_persisted_store(
         next_id: highest_id,
         audit_events: Vec::new(),
     })
+}
+
+fn resolve_kek_bytes_via_linux_command(
+    program: &str,
+    args: &[&str],
+    source_name: &str,
+) -> Result<[u8; 32], SecretBrokerError> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (program, args, source_name);
+        Err(SecretBrokerError::new(
+            "linux KEK custody adapters are unsupported on this platform",
+        ))
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let output = Command::new(program).args(args).output().map_err(|error| {
+            SecretBrokerError::new(format!("{source_name} invocation failed: {error}"))
+        })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(output.stderr.as_slice())
+                .trim()
+                .to_string();
+            if stderr.is_empty() {
+                return Err(SecretBrokerError::new(format!(
+                    "{source_name} exited with non-zero status {}",
+                    output.status
+                )));
+            }
+            return Err(SecretBrokerError::new(format!(
+                "{source_name} exited with non-zero status {}: {stderr}",
+                output.status
+            )));
+        }
+        let mut stdout = output.stdout;
+        let parsed = parse_kek_bytes_from_command_output(stdout.as_slice(), source_name);
+        clear_bytes(stdout.as_mut_slice());
+        parsed
+    }
+}
+
+#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
+fn parse_kek_bytes_from_command_output(
+    output: &[u8],
+    source_name: &str,
+) -> Result<[u8; 32], SecretBrokerError> {
+    let trimmed = trim_ascii_whitespace(output);
+    if trimmed.len() == 32 {
+        let mut bytes = [0u8; 32];
+        bytes.copy_from_slice(trimmed);
+        return Ok(bytes);
+    }
+    let text = std::str::from_utf8(trimmed).map_err(|_| {
+        SecretBrokerError::new(format!(
+            "{source_name} output must be UTF-8 text (hex/base64) or raw 32-byte KEK payload"
+        ))
+    })?;
+    parse_kek_bytes(text).map_err(|error| {
+        SecretBrokerError::new(format!(
+            "{source_name} output could not be parsed as KEK: {error}"
+        ))
+    })
+}
+
+#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
+fn trim_ascii_whitespace(input: &[u8]) -> &[u8] {
+    let mut start = 0usize;
+    let mut end = input.len();
+    while start < end && input[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    while end > start && input[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    &input[start..end]
 }
 
 fn parse_kek_bytes(raw: &str) -> Result<[u8; 32], SecretBrokerError> {
@@ -1103,22 +1487,6 @@ fn clear_bytes(bytes: &mut [u8]) {
     }
 }
 
-fn try_lock_secret_bytes(bytes: &mut [u8]) -> bool {
-    if bytes.is_empty() {
-        return false;
-    }
-    let _ = bytes;
-    false
-}
-
-fn try_unlock_secret_bytes(bytes: &mut [u8]) -> bool {
-    if bytes.is_empty() {
-        return false;
-    }
-    let _ = bytes;
-    false
-}
-
 fn redact_sensitive_text(input: impl AsRef<str>) -> String {
     let mut output = input.as_ref().to_string();
     output = redact_sk_tokens(output.as_str());
@@ -1198,10 +1566,12 @@ fn now_unix_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        EnvAesKekAdapter, EnvArgon2idKekAdapter, KekAdapter, SecretAuditAction,
-        SecretAuditDecision, SecretBroker, SecretHandle, SecretInjectionTarget,
-        StaticAesKekAdapter, is_secret_env_reference, render_secret_env_reference,
-        resolve_secret_env_reference, rotate_encrypted_store_kek, with_global_secret_broker,
+        EnvAesKekAdapter, EnvArgon2idKekAdapter, KekAdapter, LinuxKekCustodyChainAdapter,
+        LinuxKernelKeyringKekAdapter, LinuxSecretServiceKekAdapter, LinuxTpm2KekAdapter,
+        SecretAuditAction, SecretAuditDecision, SecretBroker, SecretHandle, SecretInjectionTarget,
+        StaticAesKekAdapter, is_secret_env_reference, parse_kek_bytes_from_command_output,
+        render_secret_env_reference, resolve_secret_env_reference, rotate_encrypted_store_kek,
+        with_global_secret_broker,
     };
     use base64::Engine;
     use std::collections::HashSet;
@@ -1416,8 +1786,13 @@ mod tests {
             Ok(value) => value,
             Err(_) => return,
         };
-        let parsed: super::PersistedSecretStore =
-            serde_json::from_str(raw.as_str()).expect("persisted store should be valid json");
+        let parsed: Result<super::PersistedSecretStore, serde_json::Error> =
+            serde_json::from_str(raw.as_str());
+        assert!(parsed.is_ok(), "persisted store should be valid json");
+        let parsed = match parsed {
+            Ok(value) => value,
+            Err(_) => return,
+        };
         let mut envelope_nonces = HashSet::new();
         let mut wrapped_key_nonces = HashSet::new();
 
@@ -1425,17 +1800,28 @@ mod tests {
             if record.revoked {
                 continue;
             }
-            let nonce_b64 = record
-                .nonce_b64
-                .as_deref()
-                .expect("active record should include nonce");
-            let wrapped_b64 = record
-                .wrapped_dek_b64
-                .as_deref()
-                .expect("active record should include wrapped DEK");
-            let nonce = super::B64
-                .decode(nonce_b64.as_bytes())
-                .expect("record nonce should be base64");
+            assert!(
+                record.nonce_b64.is_some(),
+                "active record should include nonce"
+            );
+            let nonce_b64 = match record.nonce_b64.as_deref() {
+                Some(value) => value,
+                None => return,
+            };
+            assert!(
+                record.wrapped_dek_b64.is_some(),
+                "active record should include wrapped DEK"
+            );
+            let wrapped_b64 = match record.wrapped_dek_b64.as_deref() {
+                Some(value) => value,
+                None => return,
+            };
+            let nonce = super::B64.decode(nonce_b64.as_bytes());
+            assert!(nonce.is_ok(), "record nonce should be base64");
+            let nonce = match nonce {
+                Ok(value) => value,
+                Err(_) => return,
+            };
             assert_eq!(nonce.len(), 12);
             let mut envelope_nonce = [0u8; 12];
             envelope_nonce.copy_from_slice(nonce.as_slice());
@@ -1444,9 +1830,12 @@ mod tests {
                 "detected duplicate record nonce"
             );
 
-            let wrapped = super::B64
-                .decode(wrapped_b64.as_bytes())
-                .expect("wrapped dek should be base64");
+            let wrapped = super::B64.decode(wrapped_b64.as_bytes());
+            assert!(wrapped.is_ok(), "wrapped dek should be base64");
+            let wrapped = match wrapped {
+                Ok(value) => value,
+                Err(_) => return,
+            };
             assert!(wrapped.len() > 12);
             let mut wrapped_nonce = [0u8; 12];
             wrapped_nonce.copy_from_slice(&wrapped[0..12]);
@@ -1522,6 +1911,92 @@ mod tests {
 
         let unwrap_result = adapter.unwrap_key(&[0u8; 13]);
         assert!(unwrap_result.is_err());
+    }
+
+    #[test]
+    fn parse_kek_output_accepts_raw_32_bytes() {
+        let parsed = parse_kek_bytes_from_command_output(&[0xAB; 32], "unit-test");
+        assert!(parsed.is_ok());
+        let parsed = match parsed {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        assert!(parsed.iter().all(|value| *value == 0xAB));
+    }
+
+    #[test]
+    fn parse_kek_output_accepts_hex_text() {
+        let parsed = parse_kek_bytes_from_command_output(
+            b"  0102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F20\n",
+            "unit-test",
+        );
+        assert!(parsed.is_ok());
+        let parsed = match parsed {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        assert_eq!(parsed[0], 0x01);
+        assert_eq!(parsed[31], 0x20);
+    }
+
+    #[test]
+    fn parse_kek_output_rejects_invalid_payload() {
+        let parsed = parse_kek_bytes_from_command_output(&[0xFF; 31], "unit-test");
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn linux_kek_adapters_reject_empty_configuration() {
+        assert!(LinuxTpm2KekAdapter::new("kek", "").is_err());
+        assert!(LinuxKernelKeyringKekAdapter::new("kek", "").is_err());
+        assert!(LinuxSecretServiceKekAdapter::new("kek", "").is_err());
+        assert!(LinuxKekCustodyChainAdapter::new("kek", "", "42", None).is_err());
+        assert!(LinuxKekCustodyChainAdapter::new("kek", "/tmp/tpm.ctx", "", None).is_err());
+        assert!(
+            LinuxKekCustodyChainAdapter::new("kek", "/tmp/tpm.ctx", "42", Some(String::new()))
+                .is_err()
+        );
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn linux_kek_adapters_fail_closed_on_non_linux() {
+        let tpm2 = LinuxTpm2KekAdapter::new("kek", "/tmp/tpm.ctx");
+        assert!(tpm2.is_ok());
+        let tpm2 = match tpm2 {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        assert!(tpm2.wrap_key(&[1u8; 32]).is_err());
+
+        let keyring = LinuxKernelKeyringKekAdapter::new("kek", "42");
+        assert!(keyring.is_ok());
+        let keyring = match keyring {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        assert!(keyring.unwrap_key(&[0u8; 13]).is_err());
+
+        let secret_service = LinuxSecretServiceKekAdapter::new("kek", "forge-kek-main");
+        assert!(secret_service.is_ok());
+        let secret_service = match secret_service {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        assert!(secret_service.wrap_key(&[2u8; 32]).is_err());
+
+        let chain = LinuxKekCustodyChainAdapter::new(
+            "kek",
+            "/tmp/tpm.ctx",
+            "42",
+            Some("forge-kek-main".to_string()),
+        );
+        assert!(chain.is_ok());
+        let chain = match chain {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        assert!(chain.wrap_key(&[3u8; 32]).is_err());
     }
 
     #[test]
