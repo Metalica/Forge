@@ -24,3 +24,7 @@ scripts/__pycache__/
 Thumbs.db
 forge.exe
 forge.exe.log
+
+# Local-only security helper scripts (do not publish)
+scripts/argon2id_benchmark_report_check.ps1
+scripts/broker_nonce_uniqueness_check.ps1
