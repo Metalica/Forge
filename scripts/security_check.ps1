@@ -10,6 +10,8 @@ $PSNativeCommandUseErrorActionPreference = $true
 & "$PSScriptRoot\process_dumpability_scan.ps1"
 & "$PSScriptRoot\coredump_profile_scan.ps1"
 & "$PSScriptRoot\broker_audit_export_check.ps1"
+& "$PSScriptRoot\argon2id_benchmark_report_check.ps1"
+& "$PSScriptRoot\broker_nonce_uniqueness_check.ps1"
 
 function Invoke-Checked {
     param(

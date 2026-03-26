@@ -32,7 +32,6 @@ pub fn warning() -> Color {
     Color::rgb8(211, 161, 72)
 }
 
-
 pub fn input_text() -> Color {
     Color::rgb8(0, 0, 0)
 }

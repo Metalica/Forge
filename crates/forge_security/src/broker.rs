@@ -1203,6 +1203,8 @@ mod tests {
         StaticAesKekAdapter, is_secret_env_reference, render_secret_env_reference,
         resolve_secret_env_reference, rotate_encrypted_store_kek, with_global_secret_broker,
     };
+    use base64::Engine;
+    use std::collections::HashSet;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1386,6 +1388,76 @@ mod tests {
         assert!(saved.is_ok());
         let loaded = SecretBroker::load_encrypted_from_path(path.as_path(), &kek_b);
         assert!(loaded.is_err());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn persisted_encryption_nonces_are_unique_across_records() {
+        let mut broker = SecretBroker::new();
+        for index in 0..256_u32 {
+            let handle = broker.store_secret(
+                format!("OPENAI_API_KEY_{index}"),
+                format!("sk-unique-secret-{index}"),
+            );
+            assert!(handle.is_ok());
+        }
+        let kek = sample_static_kek();
+        assert!(kek.is_some());
+        let kek = match kek {
+            Some(value) => value,
+            None => return,
+        };
+        let path = unique_temp_path("broker_nonce_uniqueness");
+        let saved = broker.save_encrypted_to_path(path.as_path(), &kek);
+        assert!(saved.is_ok());
+        let raw = fs::read_to_string(path.as_path());
+        assert!(raw.is_ok());
+        let raw = match raw {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        let parsed: super::PersistedSecretStore =
+            serde_json::from_str(raw.as_str()).expect("persisted store should be valid json");
+        let mut envelope_nonces = HashSet::new();
+        let mut wrapped_key_nonces = HashSet::new();
+
+        for record in parsed.records {
+            if record.revoked {
+                continue;
+            }
+            let nonce_b64 = record
+                .nonce_b64
+                .as_deref()
+                .expect("active record should include nonce");
+            let wrapped_b64 = record
+                .wrapped_dek_b64
+                .as_deref()
+                .expect("active record should include wrapped DEK");
+            let nonce = super::B64
+                .decode(nonce_b64.as_bytes())
+                .expect("record nonce should be base64");
+            assert_eq!(nonce.len(), 12);
+            let mut envelope_nonce = [0u8; 12];
+            envelope_nonce.copy_from_slice(nonce.as_slice());
+            assert!(
+                envelope_nonces.insert(envelope_nonce),
+                "detected duplicate record nonce"
+            );
+
+            let wrapped = super::B64
+                .decode(wrapped_b64.as_bytes())
+                .expect("wrapped dek should be base64");
+            assert!(wrapped.len() > 12);
+            let mut wrapped_nonce = [0u8; 12];
+            wrapped_nonce.copy_from_slice(&wrapped[0..12]);
+            assert!(
+                wrapped_key_nonces.insert(wrapped_nonce),
+                "detected duplicate wrapped DEK nonce"
+            );
+        }
+
+        assert_eq!(envelope_nonces.len(), 256);
+        assert_eq!(wrapped_key_nonces.len(), 256);
         let _ = fs::remove_file(path);
     }
 
