@@ -761,11 +761,12 @@ pub mod process {
     use std::collections::HashMap;
     use std::error::Error;
     use std::fmt;
+    use std::fs;
     use std::io::{Read, Write};
     use std::net::{TcpStream, ToSocketAddrs};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::process::{Child, Command, Stdio};
-    use std::time::{Duration, Instant, SystemTime};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
     use urm::topology::{NumaPlacementPolicy, NumaPolicyMode};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1328,6 +1329,7 @@ pub mod process {
         last_error: Option<String>,
         health_probe: Option<RuntimeHealthProbe>,
         last_safety_marker: Option<String>,
+        isolated_temp_dir: Option<PathBuf>,
     }
 
     #[derive(Debug, Default)]
@@ -1377,15 +1379,88 @@ pub mod process {
             }
         }
 
+        fn build_isolated_temp_dir(
+            runtime_id: &str,
+            working_dir: Option<&Path>,
+        ) -> Result<PathBuf, RuntimeProcessValidationError> {
+            let base_dir = match working_dir {
+                Some(path) => path.to_path_buf(),
+                None => std::env::current_dir().map_err(|error| {
+                    RuntimeProcessValidationError::new(format!(
+                        "runtime temp isolation failed to resolve current directory: {error}"
+                    ))
+                })?,
+            };
+            let canonical_base = fs::canonicalize(&base_dir).map_err(|error| {
+                RuntimeProcessValidationError::new(format!(
+                    "runtime temp isolation failed to canonicalize base directory {}: {error}",
+                    base_dir.display()
+                ))
+            })?;
+            let root = canonical_base.join(".forge").join("runtime_tmp");
+            fs::create_dir_all(&root).map_err(|error| {
+                RuntimeProcessValidationError::new(format!(
+                    "runtime temp isolation failed to create root {}: {error}",
+                    root.display()
+                ))
+            })?;
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .ok()
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0);
+            let safe_runtime_id = Self::sanitize_runtime_id(runtime_id);
+            let isolated = root.join(format!("{safe_runtime_id}_{nonce}"));
+            fs::create_dir(&isolated).map_err(|error| {
+                RuntimeProcessValidationError::new(format!(
+                    "runtime temp isolation failed to create task directory {}: {error}",
+                    isolated.display()
+                ))
+            })?;
+            Ok(isolated)
+        }
+
+        fn sanitize_runtime_id(runtime_id: &str) -> String {
+            let mut sanitized = runtime_id
+                .chars()
+                .map(|ch| {
+                    if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                        ch
+                    } else {
+                        '_'
+                    }
+                })
+                .collect::<String>();
+            if sanitized.trim_matches('_').is_empty() {
+                sanitized = "runtime".to_string();
+            }
+            sanitized
+        }
+
+        fn apply_isolated_temp_environment(command: &mut Command, isolated_temp_dir: &Path) {
+            let value = isolated_temp_dir.to_string_lossy().to_string();
+            command.env("TMPDIR", value.as_str());
+            command.env("TMP", value.as_str());
+            command.env("TEMP", value.as_str());
+        }
+
+        fn cleanup_process_temp_dir(process: &mut ManagedRuntimeProcess) {
+            let Some(path) = process.isolated_temp_dir.take() else {
+                return;
+            };
+            let _ = fs::remove_dir_all(path);
+        }
+
         pub fn start(
             &mut self,
             runtime_id: impl Into<String>,
             request: &RuntimeLaunchRequest,
         ) -> StartResult {
             let runtime_id = runtime_id.into();
-            let process = self.processes.entry(runtime_id).or_default();
+            let process = self.processes.entry(runtime_id.clone()).or_default();
 
             if let Err(error) = request.validate() {
+                Self::cleanup_process_temp_dir(process);
                 process.child = None;
                 process.started_at = None;
                 process.last_error = Some(format!("invalid launch request: {error}"));
@@ -1398,14 +1473,32 @@ pub mod process {
                     Ok(Some(status)) => {
                         process.last_exit_code = status.code();
                         process.child = None;
+                        process.started_at = None;
+                        Self::cleanup_process_temp_dir(process);
                     }
                     Ok(None) => return StartResult::AlreadyRunning,
                     Err(error) => {
                         process.last_error = Some(error.to_string());
                         process.child = None;
+                        process.started_at = None;
+                        Self::cleanup_process_temp_dir(process);
                     }
                 }
             }
+            Self::cleanup_process_temp_dir(process);
+
+            let isolated_temp_dir =
+                match Self::build_isolated_temp_dir(&runtime_id, request.working_dir.as_deref()) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        Self::cleanup_process_temp_dir(process);
+                        process.child = None;
+                        process.started_at = None;
+                        process.last_error = Some(error.to_string());
+                        process.health_probe = request.health_probe.clone();
+                        return StartResult::LaunchFailed;
+                    }
+                };
 
             let mut command = Command::new(&request.program);
             command.args(&request.args);
@@ -1436,6 +1529,7 @@ pub mod process {
                     command.env(key, value);
                 }
             }
+            Self::apply_isolated_temp_environment(&mut command, isolated_temp_dir.as_path());
             if stdin_secret_env.is_empty() {
                 command.stdin(Stdio::null());
             } else {
@@ -1451,6 +1545,8 @@ pub mod process {
                     {
                         let _ = child.kill();
                         let _ = child.wait();
+                        let _ = fs::remove_dir_all(isolated_temp_dir.as_path());
+                        Self::cleanup_process_temp_dir(process);
                         process.child = None;
                         process.started_at = None;
                         process.last_error = Some(error.to_string());
@@ -1462,9 +1558,12 @@ pub mod process {
                     process.last_exit_code = None;
                     process.last_error = None;
                     process.health_probe = request.health_probe.clone();
+                    process.isolated_temp_dir = Some(isolated_temp_dir);
                     StartResult::Started
                 }
                 Err(error) => {
+                    let _ = fs::remove_dir_all(isolated_temp_dir.as_path());
+                    Self::cleanup_process_temp_dir(process);
                     process.child = None;
                     process.started_at = None;
                     process.last_error = Some(error.to_string());
@@ -1541,6 +1640,7 @@ pub mod process {
                 }
             }
             process.started_at = None;
+            Self::cleanup_process_temp_dir(process);
             StopResult::Stopped
         }
 
@@ -1553,12 +1653,14 @@ pub mod process {
                         process.last_exit_code = status.code();
                         process.child = None;
                         process.started_at = None;
+                        Self::cleanup_process_temp_dir(process);
                     }
                     Ok(None) => {}
                     Err(error) => {
                         process.last_error = Some(error.to_string());
                         process.child = None;
                         process.started_at = None;
+                        Self::cleanup_process_temp_dir(process);
                     }
                 }
             }
@@ -1595,6 +1697,7 @@ pub mod process {
                     let _ = child.kill();
                     let _ = child.wait();
                 }
+                Self::cleanup_process_temp_dir(&mut process);
                 return true;
             }
             false
@@ -1805,6 +1908,45 @@ pub mod process {
             }
         }
 
+        fn temp_probe_request(
+            output_path: &std::path::Path,
+            working_dir: &std::path::Path,
+        ) -> RuntimeLaunchRequest {
+            if cfg!(windows) {
+                let escaped_output = output_path.to_string_lossy().replace('\'', "''");
+                RuntimeLaunchRequest {
+                    program: "powershell".to_string(),
+                    args: vec![
+                        "-NoProfile".to_string(),
+                        "-Command".to_string(),
+                        format!(
+                            "$temp = if ($env:TEMP) {{ $env:TEMP }} elseif ($env:TMP) {{ $env:TMP }} else {{ '' }}; Set-Content -LiteralPath '{escaped_output}' -Value $temp; exit 0"
+                        ),
+                    ],
+                    working_dir: Some(working_dir.to_path_buf()),
+                    env: Vec::new(),
+                    health_probe: None,
+                    placement_hints: None,
+                }
+            } else {
+                let escaped_output = output_path
+                    .to_string_lossy()
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\"");
+                RuntimeLaunchRequest {
+                    program: "sh".to_string(),
+                    args: vec![
+                        "-c".to_string(),
+                        format!("printf '%s' \"${{TMPDIR:-$TMP}}\" > \"{escaped_output}\"; exit 0"),
+                    ],
+                    working_dir: Some(working_dir.to_path_buf()),
+                    env: Vec::new(),
+                    health_probe: None,
+                    placement_hints: None,
+                }
+            }
+        }
+
         fn wait_for_exit_code(
             manager: &mut RuntimeProcessManager,
             runtime_id: &str,
@@ -1857,6 +1999,45 @@ pub mod process {
 
             let stop = manager.stop("llama.cpp");
             assert!(matches!(stop, StopResult::Stopped | StopResult::NotRunning));
+        }
+
+        #[test]
+        fn runtime_launch_uses_isolated_temp_directory_and_cleans_it_up() {
+            let root = unique_test_root("isolated_temp");
+            assert!(fs::create_dir_all(&root).is_ok());
+            let output_path = root.join("observed_temp.txt");
+            let request = temp_probe_request(output_path.as_path(), root.as_path());
+
+            let mut manager = RuntimeProcessManager::new();
+            let started = manager.start("temp-probe", &request);
+            assert_eq!(started, StartResult::Started);
+
+            let exit_code = wait_for_exit_code(&mut manager, "temp-probe");
+            assert_eq!(exit_code, Some(0));
+
+            let contents = fs::read_to_string(output_path.as_path());
+            assert!(contents.is_ok());
+            let observed = match contents {
+                Ok(value) => value.trim().to_string(),
+                Err(_) => String::new(),
+            };
+            assert!(!observed.is_empty());
+
+            let isolated_temp_path = std::path::PathBuf::from(observed);
+            let observed_text = isolated_temp_path
+                .to_string_lossy()
+                .replace('\\', "/")
+                .to_ascii_lowercase();
+            assert!(
+                observed_text.contains("/.forge/runtime_tmp/"),
+                "observed temp path {observed_text} did not include /.forge/runtime_tmp/"
+            );
+
+            let _ = manager.status("temp-probe");
+            assert!(!isolated_temp_path.exists());
+
+            let _ = fs::remove_file(output_path.as_path());
+            let _ = fs::remove_dir_all(root);
         }
 
         #[test]
