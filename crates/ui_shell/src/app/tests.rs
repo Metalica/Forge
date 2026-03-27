@@ -1496,17 +1496,16 @@ mod tests {
         };
         let status = format_confidential_visibility_status(
             &source,
-            "forge-manual",
             "verified",
             "verified",
             "mode=TlsHttps,transport_encrypted=true",
             "not_used",
             true,
+            "provider_audit_redacted_export_only",
         );
         assert!(status.contains("location=remote://api.openai.com"));
         assert!(status.contains("runtime_class=remote_api_model"));
         assert!(status.contains("network_state=remote_tls"));
-        assert!(status.contains("provider=forge-manual"));
         assert!(status.contains("relay_status=verified"));
         assert!(status.contains("attestation_status=verified"));
         assert!(status.contains("fallback_state=not_used"));
@@ -1527,12 +1526,12 @@ mod tests {
         };
         let status = format_confidential_visibility_status(
             &source,
-            "n/a",
             "failed",
             "not_verified",
             "configured_mode=TlsHttps,transport_encrypted_expected=true",
             "blocked(no explicit consent)",
             false,
+            "provider_audit_redacted_export_only",
         );
         assert!(status.contains("location=local://http://127.0.0.1:8080/completion"));
         assert!(status.contains("runtime_class=local_model_runtime"));

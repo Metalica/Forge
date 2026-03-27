@@ -192,6 +192,7 @@ fn run() -> Result<String, String> {
                 timeout_ms: 2_500,
             },
             encryption_mode: RelayEncryptionMode::TlsHttps,
+            declared_logging_policy: runtime_registry::confidential_relay::default_declared_logging_policy(),
         }),
     };
 

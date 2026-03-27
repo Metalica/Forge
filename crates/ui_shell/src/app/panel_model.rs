@@ -72,6 +72,8 @@ fn model_studio_panel(
                 ..AttestationVerifierConfig::default()
             },
             encryption_mode: RelayEncryptionMode::TlsHttps,
+            declared_logging_policy:
+                runtime_registry::confidential_relay::default_declared_logging_policy(),
         }
     }
 
@@ -233,6 +235,10 @@ fn model_studio_panel(
             metadata.attestation_verifier.api_key_env_var = api_key_env_var;
             metadata.expected_attestation_provider = expected_provider;
             metadata.expected_measurement_prefixes = measurement_prefixes;
+            if metadata.declared_logging_policy.trim().is_empty() {
+                metadata.declared_logging_policy =
+                    runtime_registry::confidential_relay::default_declared_logging_policy();
+            }
             if metadata.attestation_verifier.timeout_ms == 0 {
                 metadata.attestation_verifier.timeout_ms = 5_000;
             }
@@ -334,6 +340,10 @@ fn model_studio_panel(
             metadata.attestation_verifier.api_key_env_var = api_key_env_var;
             metadata.expected_attestation_provider = expected_provider;
             metadata.expected_measurement_prefixes = measurement_prefixes;
+            if metadata.declared_logging_policy.trim().is_empty() {
+                metadata.declared_logging_policy =
+                    runtime_registry::confidential_relay::default_declared_logging_policy();
+            }
             if let Err(error) = metadata.validate_for_source(&source.id, &source.target) {
                 model_source_status.set(format!(
                     "confidential on blocked for {}: {}",
@@ -573,7 +583,7 @@ fn model_studio_panel(
                         };
                         match source.confidential_endpoint.as_ref() {
                             Some(metadata) => format!(
-                                "confidential source status: enabled={} verifier={} timeout_ms={} api_key_env={} provider={} prefixes={} target_prefix={} encryption={:?}",
+                                "confidential source status: enabled={} verifier={} timeout_ms={} api_key_env={} provider={} prefixes={} target_prefix={} encryption={:?} logging_policy={}",
                                 if metadata.enabled { "yes" } else { "no" },
                                 clip_text(metadata.attestation_verifier.endpoint.as_str(), 80),
                                 metadata.attestation_verifier.timeout_ms,
@@ -595,7 +605,8 @@ fn model_studio_panel(
                                     )
                                 },
                                 clip_text(metadata.expected_target_prefix.as_str(), 72),
-                                metadata.encryption_mode
+                                metadata.encryption_mode,
+                                clip_text(metadata.declared_logging_policy.as_str(), 48)
                             ),
                             None => format!(
                                 "confidential source status: source {} has no confidential metadata",

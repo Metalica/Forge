@@ -1,4 +1,11 @@
-const CONFIDENTIAL_LOGGING_POLICY_LABEL: &str = "provider_audit_redacted_export_only";
+fn normalize_confidential_logging_policy_label(input: &str) -> String {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        runtime_registry::confidential_relay::default_declared_logging_policy()
+    } else {
+        trimmed.to_string()
+    }
+}
 
 fn source_runtime_class_label(kind: SourceKind) -> &'static str {
     match kind {
@@ -41,24 +48,23 @@ fn source_network_state_label(source: &SourceEntry, transport_encrypted: bool) -
 
 fn format_confidential_visibility_status(
     source: &SourceEntry,
-    provider: &str,
     relay_status: &str,
     attestation_status: &str,
     encryption_status: &str,
     fallback_state: &str,
     transport_encrypted: bool,
+    logging_policy: &str,
 ) -> String {
     format!(
-        "location={} runtime_class={} network_state={} provider={} relay_status={} attestation_status={} encryption_status={} fallback_state={} logging_policy={}",
+        "location={} runtime_class={} network_state={} relay_status={} attestation_status={} encryption_status={} fallback_state={} logging_policy={}",
         source_location_label(source),
         source_runtime_class_label(source.kind),
         source_network_state_label(source, transport_encrypted),
-        clip_text(provider, 48),
         relay_status,
         attestation_status,
         clip_text(encryption_status, 72),
         fallback_state,
-        CONFIDENTIAL_LOGGING_POLICY_LABEL
+        clip_text(logging_policy, 48)
     )
 }
 
@@ -489,6 +495,9 @@ fn chat_panel(
                 "configured_mode={:?},transport_encrypted_expected={}",
                 confidential_metadata.encryption_mode, expected_transport_encrypted
             );
+            let declared_logging_policy = normalize_confidential_logging_policy_label(
+                confidential_metadata.declared_logging_policy.as_str(),
+            );
 
             let tracked_job_id = queue_start_tracked_job(
                 &queue,
@@ -522,12 +531,12 @@ fn chat_panel(
                     );
                     let visibility = format_confidential_visibility_status(
                         &chat_source,
-                        response.attestation_provider.as_str(),
                         "verified",
                         "verified",
                         encryption_status.as_str(),
                         "not_used",
                         response.transport_encrypted,
+                        declared_logging_policy.as_str(),
                     );
                     let baseline_remote_ms = chat_routed_baseline_latency_ms.get();
                     let overhead_text = match baseline_remote_ms {
@@ -591,12 +600,12 @@ fn chat_panel(
                             Err(request_error) => {
                                 let visibility = format_confidential_visibility_status(
                                     &chat_source,
-                                    "n/a",
                                     "failed",
                                     "not_verified",
                                     configured_encryption_status.as_str(),
                                     "blocked",
                                     expected_transport_encrypted,
+                                    declared_logging_policy.as_str(),
                                 );
                                 chat_confidential_status.set(format!(
                                     "confidential relay failed via {}: {} | fallback blocked: {} | {}",
@@ -648,12 +657,12 @@ fn chat_panel(
                                     chat_source.target.trim().starts_with("https://");
                                 let visibility = format_confidential_visibility_status(
                                     &chat_source,
-                                    "n/a",
                                     "failed",
                                     "not_verified_after_fallback",
                                     "relay_not_used_after_fallback",
                                     "remote_consented",
                                     fallback_transport_encrypted,
+                                    declared_logging_policy.as_str(),
                                 );
                                 chat_output.set(fallback_response.output_text);
                                 chat_status.set(format!(
@@ -688,12 +697,12 @@ fn chat_panel(
                                 chat_routed_baseline_latency_ms.set(None);
                                 let visibility = format_confidential_visibility_status(
                                     &chat_source,
-                                    "n/a",
                                     "failed",
                                     "not_verified_after_fallback_failure",
                                     "relay_not_used_after_fallback_failure",
                                     "remote_consented_failed",
                                     expected_transport_encrypted,
+                                    declared_logging_policy.as_str(),
                                 );
                                 chat_confidential_status.set(format!(
                                     "confidential relay failed via {}: {} | fallback_state=remote_consented_failed reason={} | {}",
@@ -722,12 +731,12 @@ fn chat_panel(
                     } else {
                         let visibility = format_confidential_visibility_status(
                             &chat_source,
-                            "n/a",
                             "failed",
                             "not_verified",
                             configured_encryption_status.as_str(),
                             "blocked(no explicit consent)",
                             expected_transport_encrypted,
+                            declared_logging_policy.as_str(),
                         );
                         chat_confidential_status.set(format!(
                             "confidential relay failed via {}: {} | fallback_state=blocked(no explicit consent) | {}",

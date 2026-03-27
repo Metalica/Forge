@@ -195,6 +195,12 @@ pub struct ConfidentialEndpointMetadata {
     pub expected_measurement_prefixes: Vec<String>,
     pub attestation_verifier: AttestationVerifierConfig,
     pub encryption_mode: RelayEncryptionMode,
+    #[serde(default = "default_declared_logging_policy")]
+    pub declared_logging_policy: String,
+}
+
+pub fn default_declared_logging_policy() -> String {
+    "provider_audit_redacted_export_only".to_string()
 }
 
 impl Default for ConfidentialEndpointMetadata {
@@ -206,6 +212,7 @@ impl Default for ConfidentialEndpointMetadata {
             expected_measurement_prefixes: Vec::new(),
             attestation_verifier: AttestationVerifierConfig::default(),
             encryption_mode: RelayEncryptionMode::TlsHttps,
+            declared_logging_policy: crate::confidential_relay::default_declared_logging_policy(),
         }
     }
 }
@@ -232,6 +239,11 @@ impl ConfidentialEndpointMetadata {
                 "source {source_id} target `{}` does not match confidential expected prefix `{}`",
                 source_target.trim(),
                 expected_target_prefix
+            )));
+        }
+        if self.declared_logging_policy.trim().is_empty() {
+            return Err(ConfidentialRelayValidationError::new(format!(
+                "source {source_id} confidential endpoint metadata is missing declared_logging_policy"
             )));
         }
         self.attestation_verifier.validate()?;
@@ -855,6 +867,7 @@ mod tests {
                 ..AttestationVerifierConfig::default()
             },
             encryption_mode: RelayEncryptionMode::TlsHttps,
+            declared_logging_policy: crate::confidential_relay::default_declared_logging_policy(),
         }
     }
 

@@ -1193,6 +1193,7 @@ mod tests {
                 ..AttestationVerifierConfig::default()
             },
             encryption_mode: crate::confidential_relay::RelayEncryptionMode::TlsHttps,
+            declared_logging_policy: crate::confidential_relay::default_declared_logging_policy(),
         }
     }
 
