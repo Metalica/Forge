@@ -53,6 +53,12 @@ try {
     if (-not (Test-Path $artifact.artifacts.gate_summary_markdown)) {
         throw "summary markdown file missing: $($artifact.artifacts.gate_summary_markdown)"
     }
+    if ($null -eq $artifact.artifacts.attestation_verification_report_json) {
+        throw "attestation verification report path missing from phase4 confidential artifact"
+    }
+    if (-not (Test-Path $artifact.artifacts.attestation_verification_report_json)) {
+        throw "attestation verification report missing: $($artifact.artifacts.attestation_verification_report_json)"
+    }
 
     Write-Host "phase4_confidential_adoption_gate.ps1 self-test passed."
 }

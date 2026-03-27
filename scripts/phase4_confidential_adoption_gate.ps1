@@ -128,11 +128,19 @@ function Write-MarkdownSummary {
     $lines += "## Artifact paths"
     $lines += "- benchmark_raw_json: $($Artifact.artifacts.benchmark_raw_json)"
     $lines += "- gate_bundle_json: $($Artifact.artifacts.gate_bundle_json)"
+    $lines += "- attestation_verification_report_json: $($Artifact.artifacts.attestation_verification_report_json)"
 
     $lines -join [Environment]::NewLine | Set-Content -Path $Path -Encoding UTF8
 }
 
 & "$PSScriptRoot\bootstrap_env.ps1"
+
+$workspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$securityOutputDir = Join-Path $workspaceRoot ".tmp\security"
+if (-not (Test-Path $securityOutputDir)) {
+    New-Item -ItemType Directory -Path $securityOutputDir -Force | Out-Null
+}
+$attestationReportPath = Join-Path $securityOutputDir "relay_attestation_verification_report.json"
 
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $defaultOutputDir = Join-Path -Path "$PSScriptRoot\.." -ChildPath ".tmp\benchmarks\phase4"
@@ -191,6 +199,11 @@ if ([string]::IsNullOrWhiteSpace($jsonLine)) {
 $benchmark = $jsonLine | ConvertFrom-Json
 $jsonLine | Set-Content -Path $BenchmarkJsonPath -Encoding UTF8
 
+& "$PSScriptRoot\relay_attestation_report_check.ps1" `
+    -BenchmarkJsonPath $BenchmarkJsonPath `
+    -OutputPath $attestationReportPath `
+    -FailOnFindings:$false
+
 $artifact = [PSCustomObject]@{
     generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
     gate_passed = [bool]$benchmark.decision.passed
@@ -219,6 +232,7 @@ $artifact = [PSCustomObject]@{
         benchmark_raw_json = $BenchmarkJsonPath
         gate_bundle_json = $bundleJsonPath
         gate_summary_markdown = $bundleMarkdownPath
+        attestation_verification_report_json = $attestationReportPath
     }
 }
 
