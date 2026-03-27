@@ -51,6 +51,11 @@ function Ensure-PolicyIntegrityKey {
 & "$PSScriptRoot\kek_custody_matrix_check.ps1"
 & "$PSScriptRoot\deep_linux_sandbox_profile_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "deep_linux_sandbox_profile_report.json")
 & "$PSScriptRoot\runtime_residual_cleanup_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "runtime_residual_cleanup_report.json")
+& "$PSScriptRoot\boot_host_integrity_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "boot_host_integrity_report.json")
+& "$PSScriptRoot\artifact_supply_chain_integrity_check.ps1" `
+    -ReportPath (Join-Path $securityArtifactRoot "artifact_supply_chain_integrity_report.json") `
+    -SbomPath (Join-Path $securityArtifactRoot "forge_workspace_sbom.json")
+& "$PSScriptRoot\linux_integrity_enforcement_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "linux_integrity_enforcement_report.json")
 
 $policyBaselinePath = Join-Path $securityArtifactRoot "policy_integrity_baseline.json"
 $policyReportPath = Join-Path $securityArtifactRoot "policy_integrity_drift_report.json"
@@ -86,6 +91,9 @@ if (-not (Test-Path -LiteralPath $policyBaselinePath)) {
 & "$PSScriptRoot\test_policy_integrity_continuous_monitor.ps1"
 & "$PSScriptRoot\test_deep_linux_sandbox_profile_check.ps1"
 & "$PSScriptRoot\test_runtime_residual_cleanup_check.ps1"
+& "$PSScriptRoot\test_boot_host_integrity_check.ps1"
+& "$PSScriptRoot\test_artifact_supply_chain_integrity_check.ps1"
+& "$PSScriptRoot\test_linux_integrity_enforcement_check.ps1"
 
 & "$PSScriptRoot\p0_acceptance_evidence_bundle.ps1"
 
