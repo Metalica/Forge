@@ -2,6 +2,7 @@
 
 pub mod allocator_build;
 pub mod confidential_relay;
+pub mod data_governance;
 pub mod io_routing;
 pub mod local_api_hardening;
 pub mod openjarvis_bridge;

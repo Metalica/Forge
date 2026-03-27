@@ -49,9 +49,18 @@ try {
     $encryptionEnv = "FORGE_BACKUP_AES256_KEY_B64"
     $signingEnv = "FORGE_BACKUP_SIGNING_KEY_B64"
     $liveKekEnv = "FORGE_SECRET_BROKER_KEK_B64"
+    $adminReauthEnv = "FORGE_ADMIN_REAUTH_CODE"
+    $adminDualEnv = "FORGE_ADMIN_DUAL_CONTROL_CODE"
+    $adminReauthCode = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes([guid]::NewGuid().ToString("N")))
+    $adminDualCode = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes([guid]::NewGuid().ToString("N")))
+    if ($adminDualCode -eq $adminReauthCode) {
+        $adminDualCode = $adminDualCode + "_dual"
+    }
     [Environment]::SetEnvironmentVariable($encryptionEnv, (New-RandomBase64Key), "Process")
     [Environment]::SetEnvironmentVariable($signingEnv, (New-RandomBase64Key), "Process")
     [Environment]::SetEnvironmentVariable($liveKekEnv, (New-RandomBase64Key), "Process")
+    [Environment]::SetEnvironmentVariable($adminReauthEnv, $adminReauthCode, "Process")
+    [Environment]::SetEnvironmentVariable($adminDualEnv, $adminDualCode, "Process")
 
     & "$PSScriptRoot\runtime_secure_backup_import.ps1" `
         -Mode Export `
@@ -59,7 +68,13 @@ try {
         -BundlePath $bundlePath `
         -EncryptionKeyEnv $encryptionEnv `
         -SigningKeyEnv $signingEnv `
-        -LiveKekEnv $liveKekEnv
+        -LiveKekEnv $liveKekEnv `
+        -AdminReauthEnv $adminReauthEnv `
+        -AdminReauthCode $adminReauthCode `
+        -DualControlEnv $adminDualEnv `
+        -DualControlCode $adminDualCode `
+        -ActionReason "selftest export validation" `
+        -TypedConfirmation "I APPROVE FORGE SECRET EXPORT"
 
     if (-not (Test-Path -LiteralPath $bundlePath)) {
         throw "Secure runtime backup bundle was not generated."
@@ -73,7 +88,13 @@ try {
         -EncryptionKeyEnv $encryptionEnv `
         -SigningKeyEnv $signingEnv `
         -LiveKekEnv $liveKekEnv `
-        -RewrapMarkerPath $rewrapMarkerPath
+        -RewrapMarkerPath $rewrapMarkerPath `
+        -AdminReauthEnv $adminReauthEnv `
+        -AdminReauthCode $adminReauthCode `
+        -DualControlEnv $adminDualEnv `
+        -DualControlCode $adminDualCode `
+        -ActionReason "selftest import validation" `
+        -TypedConfirmation "I APPROVE FORGE RUNTIME IMPORT"
 
     $restoredBinary = Join-Path $restorePath "llama-server.exe"
     $restoredMetadata = Join-Path $restorePath "nested\runtime_selection.json"
@@ -93,6 +114,9 @@ try {
             -Mode AcknowledgeRewrap `
             -RewrapMarkerPath $rewrapMarkerPath `
             -RewrapAckPath $rewrapAckPath `
+            -AdminReauthEnv $adminReauthEnv `
+            -AdminReauthCode $adminReauthCode `
+            -ActionReason "selftest acknowledge validation" `
             -TypedConfirmation "wrong confirmation"
     }
     catch {
@@ -106,6 +130,9 @@ try {
         -Mode AcknowledgeRewrap `
         -RewrapMarkerPath $rewrapMarkerPath `
         -RewrapAckPath $rewrapAckPath `
+        -AdminReauthEnv $adminReauthEnv `
+        -AdminReauthCode $adminReauthCode `
+        -ActionReason "selftest acknowledge validation" `
         -TypedConfirmation "I COMPLETED FORGE BROKER REWRAP"
 
     if (Test-Path -LiteralPath $rewrapMarkerPath) {
@@ -134,7 +161,13 @@ try {
             -QuarantineRoot $quarantineRoot `
             -EncryptionKeyEnv $encryptionEnv `
             -SigningKeyEnv $signingEnv `
-            -LiveKekEnv $liveKekEnv
+            -LiveKekEnv $liveKekEnv `
+            -AdminReauthEnv $adminReauthEnv `
+            -AdminReauthCode $adminReauthCode `
+            -DualControlEnv $adminDualEnv `
+            -DualControlCode $adminDualCode `
+            -ActionReason "selftest tamper validation" `
+            -TypedConfirmation "I APPROVE FORGE RUNTIME IMPORT"
     }
     catch {
         $tamperBlocked = $true
@@ -154,7 +187,13 @@ try {
             -BundlePath (Join-Path $root "runtime_backup_bundle_key_reuse.json") `
             -EncryptionKeyEnv $encryptionEnv `
             -SigningKeyEnv $signingEnv `
-            -LiveKekEnv $liveKekEnv
+            -LiveKekEnv $liveKekEnv `
+            -AdminReauthEnv $adminReauthEnv `
+            -AdminReauthCode $adminReauthCode `
+            -DualControlEnv $adminDualEnv `
+            -DualControlCode $adminDualCode `
+            -ActionReason "selftest key reuse validation" `
+            -TypedConfirmation "I APPROVE FORGE SECRET EXPORT"
     }
     catch {
         $keyReuseBlocked = $true
@@ -169,5 +208,7 @@ finally {
     [Environment]::SetEnvironmentVariable("FORGE_BACKUP_AES256_KEY_B64", $null, "Process")
     [Environment]::SetEnvironmentVariable("FORGE_BACKUP_SIGNING_KEY_B64", $null, "Process")
     [Environment]::SetEnvironmentVariable("FORGE_SECRET_BROKER_KEK_B64", $null, "Process")
+    [Environment]::SetEnvironmentVariable("FORGE_ADMIN_REAUTH_CODE", $null, "Process")
+    [Environment]::SetEnvironmentVariable("FORGE_ADMIN_DUAL_CONTROL_CODE", $null, "Process")
     Remove-Item -Path $root -Recurse -Force -ErrorAction SilentlyContinue
 }

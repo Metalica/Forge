@@ -80,6 +80,12 @@ Ensure-Report -Path (Join-Path $artifactRoot "deep_linux_sandbox_profile_report.
 Ensure-Report -Path (Join-Path $artifactRoot "runtime_residual_cleanup_report.json") -Generator {
     & "$PSScriptRoot\runtime_residual_cleanup_check.ps1" -ReportPath (Join-Path $artifactRoot "runtime_residual_cleanup_report.json")
 }
+Ensure-Report -Path (Join-Path $artifactRoot "dangerous_action_reauth_report.json") -Generator {
+    & "$PSScriptRoot\dangerous_action_reauth_check.ps1" -ReportPath (Join-Path $artifactRoot "dangerous_action_reauth_report.json")
+}
+Ensure-Report -Path (Join-Path $artifactRoot "data_governance_egress_report.json") -Generator {
+    & "$PSScriptRoot\data_governance_egress_check.ps1" -ReportPath (Join-Path $artifactRoot "data_governance_egress_report.json")
+}
 Ensure-Report -Path (Join-Path $artifactRoot "boot_host_integrity_report.json") -Generator {
     & "$PSScriptRoot\boot_host_integrity_check.ps1" -ReportPath (Join-Path $artifactRoot "boot_host_integrity_report.json")
 }
@@ -152,6 +158,8 @@ $artifactSpecs = @(
     @{ name = "coredump_profile_scan_report"; path = (Join-Path $artifactRoot "coredump_profile_scan_report.json"); requirePassed = $true },
     @{ name = "deep_linux_sandbox_profile_report"; path = (Join-Path $artifactRoot "deep_linux_sandbox_profile_report.json"); requirePassed = $true },
     @{ name = "runtime_residual_cleanup_report"; path = (Join-Path $artifactRoot "runtime_residual_cleanup_report.json"); requirePassed = $true },
+    @{ name = "dangerous_action_reauth_report"; path = (Join-Path $artifactRoot "dangerous_action_reauth_report.json"); requirePassed = $true },
+    @{ name = "data_governance_egress_report"; path = (Join-Path $artifactRoot "data_governance_egress_report.json"); requirePassed = $true },
     @{ name = "boot_host_integrity_report"; path = (Join-Path $artifactRoot "boot_host_integrity_report.json"); requirePassed = $true },
     @{ name = "artifact_supply_chain_integrity_report"; path = (Join-Path $artifactRoot "artifact_supply_chain_integrity_report.json"); requirePassed = $true },
     @{ name = "linux_integrity_enforcement_report"; path = (Join-Path $artifactRoot "linux_integrity_enforcement_report.json"); requirePassed = $true },

@@ -5,6 +5,7 @@ use crate::confidential_relay::{
     build_confidential_release_binding, build_confidential_session_id,
     build_confidential_session_key_id, verify_attestation,
 };
+use crate::data_governance::enforce_remote_egress_policy;
 use crate::local_api_hardening::guard_and_audit_provider_route;
 use crate::openjarvis_bridge::{
     OpenJarvisBridgeModeAConfig, OpenJarvisChatCompletionRequest,
@@ -763,6 +764,7 @@ fn execute_secure_https_api(
     source: &SourceEntry,
     request: &CodexSpecialistTaskRequest,
 ) -> Result<CodexSpecialistTaskResponse, String> {
+    enforce_remote_egress_policy("codex_specialist.remote_api", request.prompt.trim())?;
     let endpoint = derive_openai_chat_completions_endpoint(&source.target)?;
     let model = resolve_codex_specialist_model();
     let auth_header = resolve_openai_bearer_auth_header()?;
@@ -826,6 +828,7 @@ fn execute_secure_https_chat_api(
     source: &SourceEntry,
     request: &ChatTaskRequest,
 ) -> Result<ChatTaskResponse, String> {
+    enforce_remote_egress_policy("chat.remote_api", request.prompt.trim())?;
     let endpoint = derive_openai_chat_completions_endpoint(&source.target)?;
     let model = resolve_chat_model();
     let auth_header = resolve_openai_bearer_auth_header()?;
@@ -886,6 +889,7 @@ fn execute_secure_https_role_api(
     role: SourceRole,
     request: &RoleTaskRequest,
 ) -> Result<RoleTaskResponse, String> {
+    enforce_remote_egress_policy("role.remote_api", request.prompt.trim())?;
     let endpoint = derive_openai_chat_completions_endpoint(&source.target)?;
     let model = resolve_role_model(role);
     let auth_header = resolve_openai_bearer_auth_header()?;
@@ -1213,6 +1217,9 @@ mod tests {
         ConfidentialRelayMode, ConfidentialRelayPolicy, ConfidentialRelaySessionRecord,
         ConfidentialRelaySessionStore, RelayEncryptionMode,
     };
+    use crate::data_governance::{
+        DataGovernancePolicy, WorkspaceClassification, set_test_policy_override,
+    };
     use crate::local_api_hardening::{
         ProviderAdapterAuditDecision, ProviderAdapterRouteClass,
         latest_provider_adapter_audit_events,
@@ -1419,6 +1426,77 @@ mod tests {
     fn openai_endpoint_builder_rejects_non_https() {
         let endpoint = derive_openai_chat_completions_endpoint("http://api.openai.com/v1");
         assert!(endpoint.is_err());
+    }
+
+    #[test]
+    fn chat_task_remote_api_is_blocked_by_data_governance_dlp_policy() {
+        set_test_policy_override(Some(DataGovernancePolicy {
+            workspace_classification: WorkspaceClassification::Internal,
+            remote_egress_allowed: true,
+            export_approval_required: false,
+            export_approved: false,
+            retention_days: None,
+            custom_block_patterns: vec!["finance-export".to_string()],
+        }));
+
+        let source = SourceEntry {
+            id: "api-openai".to_string(),
+            display_name: "OpenAI API".to_string(),
+            kind: SourceKind::ApiModel,
+            target: "https://api.openai.com/v1".to_string(),
+            enabled: true,
+            eligible_roles: vec![SourceRole::Chat],
+            default_roles: vec![SourceRole::Chat],
+            confidential_endpoint: None,
+        };
+        let request = ChatTaskRequest::new("share finance-export workbook now", 48);
+        assert!(request.is_ok());
+        let request = match request {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        let result = run_chat_task_with_source(&source, &request);
+        set_test_policy_override(None);
+
+        assert!(result.is_err());
+        let error = result.err().unwrap_or_default();
+        assert!(error.contains("data-governance blocked remote egress"));
+        assert!(error.contains("DLP pattern"));
+    }
+
+    #[test]
+    fn chat_task_remote_api_requires_export_approval_for_restricted_workspace() {
+        set_test_policy_override(Some(DataGovernancePolicy {
+            workspace_classification: WorkspaceClassification::Restricted,
+            remote_egress_allowed: true,
+            export_approval_required: true,
+            export_approved: false,
+            retention_days: Some(30),
+            custom_block_patterns: Vec::new(),
+        }));
+
+        let source = SourceEntry {
+            id: "api-openai".to_string(),
+            display_name: "OpenAI API".to_string(),
+            kind: SourceKind::ApiModel,
+            target: "https://api.openai.com/v1".to_string(),
+            enabled: true,
+            eligible_roles: vec![SourceRole::Chat],
+            default_roles: vec![SourceRole::Chat],
+            confidential_endpoint: None,
+        };
+        let request = ChatTaskRequest::new("summarize this ticket thread", 48);
+        assert!(request.is_ok());
+        let request = match request {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        let result = run_chat_task_with_source(&source, &request);
+        set_test_policy_override(None);
+
+        assert!(result.is_err());
+        let error = result.err().unwrap_or_default();
+        assert!(error.contains("requires explicit export approval"));
     }
 
     #[test]

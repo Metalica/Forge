@@ -51,6 +51,8 @@ function Ensure-PolicyIntegrityKey {
 & "$PSScriptRoot\kek_custody_matrix_check.ps1"
 & "$PSScriptRoot\deep_linux_sandbox_profile_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "deep_linux_sandbox_profile_report.json")
 & "$PSScriptRoot\runtime_residual_cleanup_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "runtime_residual_cleanup_report.json")
+& "$PSScriptRoot\dangerous_action_reauth_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "dangerous_action_reauth_report.json")
+& "$PSScriptRoot\data_governance_egress_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "data_governance_egress_report.json")
 & "$PSScriptRoot\boot_host_integrity_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "boot_host_integrity_report.json")
 & "$PSScriptRoot\artifact_supply_chain_integrity_check.ps1" `
     -ReportPath (Join-Path $securityArtifactRoot "artifact_supply_chain_integrity_report.json") `
@@ -91,6 +93,8 @@ if (-not (Test-Path -LiteralPath $policyBaselinePath)) {
 & "$PSScriptRoot\test_policy_integrity_continuous_monitor.ps1"
 & "$PSScriptRoot\test_deep_linux_sandbox_profile_check.ps1"
 & "$PSScriptRoot\test_runtime_residual_cleanup_check.ps1"
+& "$PSScriptRoot\test_dangerous_action_reauth_check.ps1"
+& "$PSScriptRoot\test_data_governance_egress_check.ps1"
 & "$PSScriptRoot\test_boot_host_integrity_check.ps1"
 & "$PSScriptRoot\test_artifact_supply_chain_integrity_check.ps1"
 & "$PSScriptRoot\test_linux_integrity_enforcement_check.ps1"

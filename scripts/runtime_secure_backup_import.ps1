@@ -10,8 +10,15 @@ param(
     [string]$LiveKekEnv = "FORGE_SECRET_BROKER_KEK_B64",
     [string]$RewrapMarkerPath = "",
     [string]$RewrapAckPath = "",
+    [string]$AdminReauthEnv = "FORGE_ADMIN_REAUTH_CODE",
+    [string]$AdminReauthCode = "",
+    [string]$DualControlEnv = "FORGE_ADMIN_DUAL_CONTROL_CODE",
+    [string]$DualControlCode = "",
+    [string]$ActionReason = "",
+    [string]$RequirePhishingResistantAuthEnv = "FORGE_REQUIRE_PHISHING_RESISTANT_AUTH",
+    [string]$PhishingResistantAuthEnv = "FORGE_ADMIN_WEBAUTHN_ASSERTION",
     [string]$TypedConfirmation = "",
-    [string]$RequiredTypedConfirmation = "I COMPLETED FORGE BROKER REWRAP",
+    [string]$RequiredTypedConfirmation = "",
     [switch]$AllowKeyReuse = $false
 )
 
@@ -49,6 +56,81 @@ function Resolve-PathForWrite {
         Ensure-Directory -Path $parent
     }
     return [System.IO.Path]::GetFullPath($Path)
+}
+
+function Get-EnvFlag {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    $raw = [Environment]::GetEnvironmentVariable($Name, "Process")
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        return $false
+    }
+    $normalized = $raw.Trim().ToLowerInvariant()
+    return $normalized -in @("1", "true", "yes", "on")
+}
+
+function Resolve-RequiredTypedConfirmationForMode {
+    param([Parameter(Mandatory = $true)][string]$CurrentMode)
+    if (-not [string]::IsNullOrWhiteSpace($RequiredTypedConfirmation)) {
+        return $RequiredTypedConfirmation
+    }
+    if ($CurrentMode -eq "Export") {
+        return "I APPROVE FORGE SECRET EXPORT"
+    }
+    if ($CurrentMode -eq "Import") {
+        return "I APPROVE FORGE RUNTIME IMPORT"
+    }
+    return "I COMPLETED FORGE BROKER REWRAP"
+}
+
+function Assert-DangerousActionAuthorization {
+    param(
+        [Parameter(Mandatory = $true)][string]$ActionName,
+        [Parameter(Mandatory = $true)][string]$ModeName,
+        [Parameter(Mandatory = $true)][string]$PrimaryReauthEnvName,
+        [Parameter(Mandatory = $true)][string]$PrimaryReauthCode,
+        [Parameter(Mandatory = $false)][switch]$RequireDualControl,
+        [Parameter(Mandatory = $false)][string]$DualControlEnvName = "",
+        [Parameter(Mandatory = $false)][string]$DualControlCodeValue = ""
+    )
+    if ([string]::IsNullOrWhiteSpace($ActionReason)) {
+        throw "Dangerous action '$ActionName' requires a non-empty action reason."
+    }
+
+    $expectedPrimary = [Environment]::GetEnvironmentVariable($PrimaryReauthEnvName, "Process")
+    if ([string]::IsNullOrWhiteSpace($expectedPrimary)) {
+        throw "Dangerous action '$ActionName' requires configured admin re-auth env '$PrimaryReauthEnvName'."
+    }
+    if ($PrimaryReauthCode -ne $expectedPrimary) {
+        throw "Dangerous action '$ActionName' admin re-auth verification failed."
+    }
+
+    if ($RequireDualControl) {
+        if ([string]::IsNullOrWhiteSpace($DualControlEnvName)) {
+            throw "Dangerous action '$ActionName' dual-control env name cannot be empty."
+        }
+        $expectedDual = [Environment]::GetEnvironmentVariable($DualControlEnvName, "Process")
+        if ([string]::IsNullOrWhiteSpace($expectedDual)) {
+            throw "Dangerous action '$ActionName' requires configured dual-control env '$DualControlEnvName'."
+        }
+        if ($DualControlCodeValue -ne $expectedDual) {
+            throw "Dangerous action '$ActionName' dual-control verification failed."
+        }
+        if ($DualControlCodeValue -eq $PrimaryReauthCode) {
+            throw "Dangerous action '$ActionName' requires distinct primary and dual-control codes."
+        }
+    }
+
+    if (Get-EnvFlag -Name $RequirePhishingResistantAuthEnv) {
+        $assertion = [Environment]::GetEnvironmentVariable($PhishingResistantAuthEnv, "Process")
+        if ([string]::IsNullOrWhiteSpace($assertion)) {
+            throw "Dangerous action '$ActionName' requires phishing-resistant authenticator evidence env '$PhishingResistantAuthEnv'."
+        }
+    }
+
+    $requiredConfirmation = Resolve-RequiredTypedConfirmationForMode -CurrentMode $ModeName
+    if ($TypedConfirmation -ne $requiredConfirmation) {
+        throw "Typed confirmation mismatch. Expected '$requiredConfirmation'."
+    }
 }
 
 function New-RandomBytes {
@@ -295,8 +377,9 @@ function Write-RewrapAcknowledgement {
     if (-not (Test-Path -LiteralPath $MarkerPath)) {
         throw "Rewrap marker not found at '$MarkerPath'."
     }
-    if ($TypedConfirmation -ne $RequiredTypedConfirmation) {
-        throw "Typed confirmation mismatch. Expected '$RequiredTypedConfirmation'."
+    $requiredConfirmation = Resolve-RequiredTypedConfirmationForMode -CurrentMode "AcknowledgeRewrap"
+    if ($TypedConfirmation -ne $requiredConfirmation) {
+        throw "Typed confirmation mismatch. Expected '$requiredConfirmation'."
     }
 
     $marker = Get-Content -LiteralPath $MarkerPath -Raw | ConvertFrom-Json
@@ -441,6 +524,15 @@ function Resolve-ManifestCandidatePath {
 }
 
 function Export-SecureBackupBundle {
+    Assert-DangerousActionAuthorization `
+        -ActionName "secret_export" `
+        -ModeName "Export" `
+        -PrimaryReauthEnvName $AdminReauthEnv `
+        -PrimaryReauthCode $AdminReauthCode `
+        -RequireDualControl `
+        -DualControlEnvName $DualControlEnv `
+        -DualControlCodeValue $DualControlCode
+
     $workspaceRoot = Resolve-WorkspaceRoot
     $source = Resolve-CanonicalPath -Path $SourcePath
     if (-not (Test-Path -LiteralPath $source -PathType Container)) {
@@ -515,6 +607,15 @@ function Export-SecureBackupBundle {
 }
 
 function Import-SecureBackupBundle {
+    Assert-DangerousActionAuthorization `
+        -ActionName "runtime_import" `
+        -ModeName "Import" `
+        -PrimaryReauthEnvName $AdminReauthEnv `
+        -PrimaryReauthCode $AdminReauthCode `
+        -RequireDualControl `
+        -DualControlEnvName $DualControlEnv `
+        -DualControlCodeValue $DualControlCode
+
     $workspaceRoot = Resolve-WorkspaceRoot
     if ([string]::IsNullOrWhiteSpace($BundlePath)) {
         throw "BundlePath is required for import mode."
@@ -651,6 +752,12 @@ function Import-SecureBackupBundle {
 }
 
 function Acknowledge-RewrapCompletion {
+    Assert-DangerousActionAuthorization `
+        -ActionName "kek_rewrap_acknowledgement" `
+        -ModeName "AcknowledgeRewrap" `
+        -PrimaryReauthEnvName $AdminReauthEnv `
+        -PrimaryReauthCode $AdminReauthCode
+
     if ([string]::IsNullOrWhiteSpace($RewrapMarkerPath)) {
         $RewrapMarkerPath = Resolve-DefaultSecurityPath -LeafName "runtime_restore_rewrap_required.json"
     }
