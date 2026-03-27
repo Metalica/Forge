@@ -53,6 +53,8 @@ function Ensure-PolicyIntegrityKey {
 & "$PSScriptRoot\runtime_residual_cleanup_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "runtime_residual_cleanup_report.json")
 & "$PSScriptRoot\dangerous_action_reauth_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "dangerous_action_reauth_report.json")
 & "$PSScriptRoot\data_governance_egress_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "data_governance_egress_report.json")
+& "$PSScriptRoot\incident_response_quarantine_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "incident_response_quarantine_report.json")
+& "$PSScriptRoot\model_provider_trust_policy_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "model_provider_trust_policy_report.json")
 & "$PSScriptRoot\boot_host_integrity_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "boot_host_integrity_report.json")
 & "$PSScriptRoot\artifact_supply_chain_integrity_check.ps1" `
     -ReportPath (Join-Path $securityArtifactRoot "artifact_supply_chain_integrity_report.json") `
@@ -95,6 +97,8 @@ if (-not (Test-Path -LiteralPath $policyBaselinePath)) {
 & "$PSScriptRoot\test_runtime_residual_cleanup_check.ps1"
 & "$PSScriptRoot\test_dangerous_action_reauth_check.ps1"
 & "$PSScriptRoot\test_data_governance_egress_check.ps1"
+& "$PSScriptRoot\test_incident_response_quarantine_check.ps1"
+& "$PSScriptRoot\test_model_provider_trust_policy_check.ps1"
 & "$PSScriptRoot\test_boot_host_integrity_check.ps1"
 & "$PSScriptRoot\test_artifact_supply_chain_integrity_check.ps1"
 & "$PSScriptRoot\test_linux_integrity_enforcement_check.ps1"

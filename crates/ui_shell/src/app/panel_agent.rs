@@ -1482,6 +1482,10 @@ fn format_extension_host_error(target: &str, error: &ExtensionHostError) -> Stri
         ExtensionHostError::FailedIsolated(id) => {
             format!("extension {id} is isolated; recover before enable")
         }
+        ExtensionHostError::QuarantineModeActive { action } => format!(
+            "extension action blocked while quarantine mode is active: {}",
+            clip_text(action, 80)
+        ),
         ExtensionHostError::SecurityPolicyBlocked {
             extension_id,
             reason,

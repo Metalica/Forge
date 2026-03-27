@@ -86,6 +86,14 @@ Ensure-Report -Path (Join-Path $artifactRoot "dangerous_action_reauth_report.jso
 Ensure-Report -Path (Join-Path $artifactRoot "data_governance_egress_report.json") -Generator {
     & "$PSScriptRoot\data_governance_egress_check.ps1" -ReportPath (Join-Path $artifactRoot "data_governance_egress_report.json")
 }
+Ensure-Report -Path (Join-Path $artifactRoot "incident_response_quarantine_report.json") -Generator {
+    & "$PSScriptRoot\incident_response_quarantine_check.ps1" `
+        -ReportPath (Join-Path $artifactRoot "incident_response_quarantine_report.json") `
+        -EvidenceDigestPath (Join-Path $artifactRoot "incident_quarantine_evidence_digest.json")
+}
+Ensure-Report -Path (Join-Path $artifactRoot "model_provider_trust_policy_report.json") -Generator {
+    & "$PSScriptRoot\model_provider_trust_policy_check.ps1" -ReportPath (Join-Path $artifactRoot "model_provider_trust_policy_report.json")
+}
 Ensure-Report -Path (Join-Path $artifactRoot "boot_host_integrity_report.json") -Generator {
     & "$PSScriptRoot\boot_host_integrity_check.ps1" -ReportPath (Join-Path $artifactRoot "boot_host_integrity_report.json")
 }
@@ -160,6 +168,8 @@ $artifactSpecs = @(
     @{ name = "runtime_residual_cleanup_report"; path = (Join-Path $artifactRoot "runtime_residual_cleanup_report.json"); requirePassed = $true },
     @{ name = "dangerous_action_reauth_report"; path = (Join-Path $artifactRoot "dangerous_action_reauth_report.json"); requirePassed = $true },
     @{ name = "data_governance_egress_report"; path = (Join-Path $artifactRoot "data_governance_egress_report.json"); requirePassed = $true },
+    @{ name = "incident_response_quarantine_report"; path = (Join-Path $artifactRoot "incident_response_quarantine_report.json"); requirePassed = $true },
+    @{ name = "model_provider_trust_policy_report"; path = (Join-Path $artifactRoot "model_provider_trust_policy_report.json"); requirePassed = $true },
     @{ name = "boot_host_integrity_report"; path = (Join-Path $artifactRoot "boot_host_integrity_report.json"); requirePassed = $true },
     @{ name = "artifact_supply_chain_integrity_report"; path = (Join-Path $artifactRoot "artifact_supply_chain_integrity_report.json"); requirePassed = $true },
     @{ name = "linux_integrity_enforcement_report"; path = (Join-Path $artifactRoot "linux_integrity_enforcement_report.json"); requirePassed = $true },
@@ -167,6 +177,7 @@ $artifactSpecs = @(
     @{ name = "broker_audit_events"; path = (Join-Path $artifactRoot "broker_audit_events.json"); requirePassed = $false },
     @{ name = "provider_adapter_audit_events"; path = (Join-Path $artifactRoot "provider_adapter_audit_events.json"); requirePassed = $false },
     @{ name = "kek_custody_matrix"; path = (Join-Path $artifactRoot "kek_custody_matrix.json"); requirePassed = $false },
+    @{ name = "incident_quarantine_evidence_digest"; path = (Join-Path $artifactRoot "incident_quarantine_evidence_digest.json"); requirePassed = $false },
     @{ name = "argon2id_benchmark_report"; path = $argon2Path; requirePassed = $false },
     @{ name = "nonce_uniqueness_report"; path = $noncePath; requirePassed = $true },
     @{ name = "policy_integrity_drift_report"; path = $policyReportPath; requirePassed = $false },

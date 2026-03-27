@@ -6,6 +6,7 @@ use rand::RngCore;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::env;
 use std::error::Error;
 use std::fmt;
 
@@ -165,6 +166,7 @@ impl Error for McpToolPolicyError {}
 pub enum McpTokenIssueError {
     ExtensionNotFound(String),
     ExtensionNotEnabled(String),
+    QuarantineModeActive,
     InvalidSessionId,
     InvalidAudience,
     InvalidScope,
@@ -187,6 +189,9 @@ impl fmt::Display for McpTokenIssueError {
             }
             McpTokenIssueError::ExtensionNotEnabled(id) => {
                 write!(f, "extension is not enabled: {id}")
+            }
+            McpTokenIssueError::QuarantineModeActive => {
+                f.write_str("MCP token issuance blocked while quarantine mode is active")
             }
             McpTokenIssueError::InvalidSessionId => f.write_str("MCP session_id cannot be empty"),
             McpTokenIssueError::InvalidAudience => f.write_str("MCP audience cannot be empty"),
@@ -217,6 +222,7 @@ pub enum McpTokenAuthorizationError {
     InvalidToken,
     InvalidToolName,
     InvalidAudience,
+    QuarantineModeActive,
     ToolPolicyNotFound(String),
     PolicyAudienceMismatch {
         tool_name: String,
@@ -251,6 +257,9 @@ impl fmt::Display for McpTokenAuthorizationError {
             }
             McpTokenAuthorizationError::InvalidAudience => {
                 f.write_str("MCP audience cannot be empty")
+            }
+            McpTokenAuthorizationError::QuarantineModeActive => {
+                f.write_str("MCP authorization blocked while quarantine mode is active")
             }
             McpTokenAuthorizationError::ToolPolicyNotFound(tool_name) => {
                 write!(f, "MCP tool policy not found for tool `{tool_name}`")
@@ -400,6 +409,19 @@ fn normalize_mcp_scope_set(scopes: &[String]) -> Option<Vec<String>> {
 
 fn normalize_mcp_tool_key(tool_name: &str) -> Option<String> {
     normalize_non_empty_label(tool_name).map(|value| value.to_ascii_lowercase())
+}
+
+fn env_flag(name: &str) -> Option<bool> {
+    let raw = env::var(name).ok()?;
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn quarantine_mode_from_env() -> bool {
+    env_flag("FORGE_QUARANTINE_MODE").unwrap_or(false)
 }
 
 fn looks_destructive_keyword(value: &str) -> bool {
@@ -858,6 +880,9 @@ pub enum ExtensionHostError {
     NotFound(String),
     InvalidManifest(String),
     FailedIsolated(String),
+    QuarantineModeActive {
+        action: String,
+    },
     SecurityPolicyBlocked {
         extension_id: String,
         reason: String,
@@ -878,6 +903,7 @@ pub struct ExtensionHost {
     mcp_tool_policies: HashMap<String, McpToolPolicy>,
     mcp_tokens: HashMap<String, McpTokenLease>,
     forge_version: String,
+    quarantine_mode: bool,
     trusted_manifest_signers: HashMap<String, TrustedManifestSigner>,
 }
 
@@ -904,6 +930,7 @@ impl ExtensionHost {
             mcp_tool_policies: HashMap::new(),
             mcp_tokens: HashMap::new(),
             forge_version: normalized,
+            quarantine_mode: quarantine_mode_from_env(),
             trusted_manifest_signers: default_manifest_signers(),
         }
     }
@@ -932,6 +959,28 @@ impl ExtensionHost {
             }
         }
         revoked
+    }
+
+    fn revoke_all_mcp_tokens(&mut self) -> usize {
+        let mut revoked = 0usize;
+        for lease in self.mcp_tokens.values_mut() {
+            if !lease.revoked {
+                lease.revoked = true;
+                revoked = revoked.saturating_add(1);
+            }
+        }
+        revoked
+    }
+
+    pub fn set_quarantine_mode(&mut self, enabled: bool) {
+        self.quarantine_mode = enabled;
+        if enabled {
+            let _ = self.revoke_all_mcp_tokens();
+        }
+    }
+
+    pub fn refresh_quarantine_mode_from_env(&mut self) {
+        self.set_quarantine_mode(quarantine_mode_from_env());
     }
 
     fn extension_declared_scope_set(runtime: &ExtensionRuntime) -> HashSet<String> {
@@ -1006,6 +1055,9 @@ impl ExtensionHost {
         ttl_ms: u64,
         now_unix_ms: u64,
     ) -> Result<McpScopedToken, McpTokenIssueError> {
+        if self.quarantine_mode {
+            return Err(McpTokenIssueError::QuarantineModeActive);
+        }
         let Some(normalized_session_id) = normalize_non_empty_label(session_id) else {
             return Err(McpTokenIssueError::InvalidSessionId);
         };
@@ -1075,6 +1127,9 @@ impl ExtensionHost {
         audience: &str,
         now_unix_ms: u64,
     ) -> Result<McpAuthorizedToolCall, McpTokenAuthorizationError> {
+        if self.quarantine_mode {
+            return Err(McpTokenAuthorizationError::QuarantineModeActive);
+        }
         let Some(trimmed_token) = normalize_non_empty_label(token) else {
             return Err(McpTokenAuthorizationError::InvalidToken);
         };
@@ -1403,6 +1458,11 @@ impl ExtensionHost {
 
     pub fn set_enabled(&mut self, id: &str, enabled: bool) -> Result<(), ExtensionHostError> {
         if enabled {
+            if self.quarantine_mode {
+                return Err(ExtensionHostError::QuarantineModeActive {
+                    action: "enable extension".to_string(),
+                });
+            }
             let runtime = self
                 .extensions
                 .get(id)
@@ -2682,6 +2742,89 @@ mod tests {
         assert!(matches!(
             issued,
             super::McpTokenIssueError::NoMatchingToolPolicy { .. }
+        ));
+    }
+
+    #[test]
+    fn quarantine_mode_blocks_extension_enablement() {
+        let mut host = ExtensionHost::new();
+        host.set_quarantine_mode(true);
+        register_test_manifest_signer(&mut host);
+        assert!(host.register(provider_manifest()).is_ok());
+        assert!(host.grant_all_permissions("provider").is_ok());
+
+        let enabled = host.set_enabled("provider", true);
+        assert!(enabled.is_err());
+        let enabled = match enabled {
+            Ok(_) => return,
+            Err(value) => value,
+        };
+        assert!(matches!(
+            enabled,
+            ExtensionHostError::QuarantineModeActive { .. }
+        ));
+    }
+
+    #[test]
+    fn quarantine_mode_blocks_mcp_issue_and_authorization() {
+        let mut host = ExtensionHost::new();
+        register_test_manifest_signer(&mut host);
+        assert!(host.register(provider_manifest()).is_ok());
+        assert!(host.grant_all_permissions("provider").is_ok());
+        assert!(host.set_enabled("provider", true).is_ok());
+        assert!(
+            host.set_mcp_tool_policy("chat.send", "provider.chat", "mcp://tools/chat")
+                .is_ok()
+        );
+
+        let issued = host.issue_mcp_scoped_token(
+            "provider",
+            "session-pre-quarantine",
+            "mcp://tools/chat",
+            vec!["provider.chat".to_string()],
+            10_000,
+            1_000,
+        );
+        assert!(issued.is_ok());
+        let issued = match issued {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+
+        host.set_quarantine_mode(true);
+
+        let denied_issue = host.issue_mcp_scoped_token(
+            "provider",
+            "session-quarantine",
+            "mcp://tools/chat",
+            vec!["provider.chat".to_string()],
+            10_000,
+            1_100,
+        );
+        assert!(denied_issue.is_err());
+        let denied_issue = match denied_issue {
+            Ok(_) => return,
+            Err(value) => value,
+        };
+        assert!(matches!(
+            denied_issue,
+            super::McpTokenIssueError::QuarantineModeActive
+        ));
+
+        let denied_auth = host.authorize_mcp_tool_call(
+            issued.token.as_str(),
+            "chat.send",
+            "mcp://tools/chat",
+            1_200,
+        );
+        assert!(denied_auth.is_err());
+        let denied_auth = match denied_auth {
+            Ok(_) => return,
+            Err(value) => value,
+        };
+        assert!(matches!(
+            denied_auth,
+            super::McpTokenAuthorizationError::QuarantineModeActive
         ));
     }
 }

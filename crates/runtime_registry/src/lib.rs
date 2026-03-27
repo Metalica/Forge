@@ -3,8 +3,10 @@
 pub mod allocator_build;
 pub mod confidential_relay;
 pub mod data_governance;
+pub mod incident_response_quarantine;
 pub mod io_routing;
 pub mod local_api_hardening;
+pub mod model_provider_trust_policy;
 pub mod openjarvis_bridge;
 pub mod openjarvis_mode_b;
 pub mod provider_adapter;

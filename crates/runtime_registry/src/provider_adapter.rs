@@ -6,7 +6,9 @@ use crate::confidential_relay::{
     build_confidential_session_key_id, verify_attestation,
 };
 use crate::data_governance::enforce_remote_egress_policy;
+use crate::incident_response_quarantine::enforce_incident_response_quarantine;
 use crate::local_api_hardening::guard_and_audit_provider_route;
+use crate::model_provider_trust_policy::enforce_model_provider_trust_policy;
 use crate::openjarvis_bridge::{
     OpenJarvisBridgeModeAConfig, OpenJarvisChatCompletionRequest,
     run_openjarvis_mode_a_chat_completion,
@@ -313,6 +315,9 @@ pub fn run_chat_task_with_source(
     if !source.enabled {
         return Err(format!("source {} is disabled for chat routing", source.id));
     }
+    let model = resolve_chat_model();
+    enforce_model_provider_trust_policy("chat.provider_route", source, model.as_str())?;
+    enforce_incident_response_quarantine("chat.provider_route", source.target.trim(), false)?;
 
     guard_and_audit_provider_route(source, "chat", || match source.kind {
         SourceKind::LocalModel => Err(format!(
@@ -352,6 +357,9 @@ pub fn run_confidential_chat_task_with_source(
             source.id
         ));
     }
+    let model = resolve_chat_model();
+    enforce_model_provider_trust_policy("chat.confidential_relay", source, model.as_str())?;
+    enforce_incident_response_quarantine("chat.confidential_relay", source.target.trim(), true)?;
     let source_target = source.target.trim();
     let localhost_http_allowed = allow_insecure_localhost_http_endpoint(source_target);
     if !source_target.starts_with("https://") && !localhost_http_allowed {
@@ -520,6 +528,9 @@ pub fn run_role_task_with_source(
             role.label()
         ));
     }
+    let model = resolve_role_model(role);
+    enforce_model_provider_trust_policy("role.provider_route", source, model.as_str())?;
+    enforce_incident_response_quarantine("role.provider_route", source.target.trim(), false)?;
 
     guard_and_audit_provider_route(source, role.label(), || match source.kind {
         SourceKind::LocalModel => Err(format!(
@@ -586,6 +597,13 @@ fn execute_codex_specialist_with_source(
             source.id
         ));
     }
+    let model = resolve_codex_specialist_model();
+    enforce_model_provider_trust_policy("codex_specialist.provider_route", source, model.as_str())?;
+    enforce_incident_response_quarantine(
+        "codex_specialist.provider_route",
+        source.target.trim(),
+        false,
+    )?;
 
     guard_and_audit_provider_route(source, "codex_specialist", || match source.kind {
         SourceKind::SidecarBridge => {
@@ -1218,16 +1236,28 @@ mod tests {
         ConfidentialRelaySessionStore, RelayEncryptionMode,
     };
     use crate::data_governance::{
-        DataGovernancePolicy, WorkspaceClassification, set_test_policy_override,
+        DataGovernancePolicy, WorkspaceClassification,
+        set_test_policy_override as set_data_governance_policy_override,
+    };
+    use crate::incident_response_quarantine::{
+        IncidentResponseQuarantinePolicy,
+        set_test_policy_override as set_quarantine_policy_override,
     };
     use crate::local_api_hardening::{
         ProviderAdapterAuditDecision, ProviderAdapterRouteClass,
         latest_provider_adapter_audit_events,
     };
+    use crate::model_provider_trust_policy::{
+        ModelProviderTrustPolicy, ModelRiskTier,
+        set_test_policy_override as set_trust_policy_override,
+    };
     use crate::source_registry::{SourceEntry, SourceKind, SourceRegistry, SourceRole};
+    use sha2::{Digest, Sha256};
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{env, fs};
 
     fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         haystack
@@ -1314,6 +1344,69 @@ mod tests {
             let _ = stream.flush();
         });
         Some((endpoint, handle))
+    }
+
+    fn temp_quarantine_paths(prefix: &str) -> (String, String, String, String) {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .map(|value| value.as_nanos())
+            .unwrap_or(0);
+        let root = env::temp_dir()
+            .join(format!("forge_provider_adapter_{prefix}_{stamp}"))
+            .to_string_lossy()
+            .to_string();
+        let marker_path = format!("{root}/QUARANTINE_MODE.flag");
+        let evidence_path = format!("{root}/evidence_bundle.json");
+        let digest_path = format!("{root}/evidence_bundle.sha256");
+        let _ = fs::create_dir_all(root.as_str());
+        let _ = fs::write(marker_path.as_str(), "quarantine");
+        let _ = fs::write(evidence_path.as_str(), "{\"evidence\":\"ok\"}");
+        let digest = Sha256::digest(b"{\"evidence\":\"ok\"}");
+        let mut digest_hex = String::new();
+        for byte in digest {
+            digest_hex.push_str(format!("{byte:02x}").as_str());
+        }
+        let _ = fs::write(digest_path.as_str(), digest_hex);
+        (root, marker_path, evidence_path, digest_path)
+    }
+
+    fn permissive_trust_policy() -> ModelProviderTrustPolicy {
+        ModelProviderTrustPolicy {
+            workspace_classification: WorkspaceClassification::Internal,
+            allowed_provider_ids: vec!["api-openai".to_string(), "openjarvis-mode-a".to_string()],
+            allow_local_model_class: true,
+            allow_local_compatible_api_class: true,
+            allow_remote_provider_class: true,
+            max_model_risk_tier: ModelRiskTier::High,
+            require_local_model_manifest_verified: false,
+            local_model_manifest_verified_source_ids: Vec::new(),
+            require_signed_sources: false,
+            signed_source_ids: Vec::new(),
+            model_risk_overrides: Vec::new(),
+        }
+    }
+
+    fn active_quarantine_policy_with_allowlist(
+        allowlist: Vec<String>,
+    ) -> IncidentResponseQuarantinePolicy {
+        let (_root, marker_path, evidence_path, digest_path) = temp_quarantine_paths("active");
+        IncidentResponseQuarantinePolicy {
+            mode_enabled: true,
+            recovery_endpoint_allowlist: allowlist,
+            marker_path: Some(marker_path),
+            evidence_bundle_path: Some(evidence_path),
+            evidence_digest_path: Some(digest_path),
+            require_reattestation_before_exit: true,
+            reattested: false,
+            reverified: false,
+            extensions_frozen: true,
+            mcp_frozen: true,
+            secret_handles_revoked: true,
+            caches_invalidated: true,
+            memory_lanes_invalidated: true,
+            relay_blocked: true,
+        }
     }
 
     #[test]
@@ -1430,7 +1523,7 @@ mod tests {
 
     #[test]
     fn chat_task_remote_api_is_blocked_by_data_governance_dlp_policy() {
-        set_test_policy_override(Some(DataGovernancePolicy {
+        set_data_governance_policy_override(Some(DataGovernancePolicy {
             workspace_classification: WorkspaceClassification::Internal,
             remote_egress_allowed: true,
             export_approval_required: false,
@@ -1456,7 +1549,7 @@ mod tests {
             Err(_) => return,
         };
         let result = run_chat_task_with_source(&source, &request);
-        set_test_policy_override(None);
+        set_data_governance_policy_override(None);
 
         assert!(result.is_err());
         let error = result.err().unwrap_or_default();
@@ -1466,7 +1559,7 @@ mod tests {
 
     #[test]
     fn chat_task_remote_api_requires_export_approval_for_restricted_workspace() {
-        set_test_policy_override(Some(DataGovernancePolicy {
+        set_data_governance_policy_override(Some(DataGovernancePolicy {
             workspace_classification: WorkspaceClassification::Restricted,
             remote_egress_allowed: true,
             export_approval_required: true,
@@ -1492,11 +1585,226 @@ mod tests {
             Err(_) => return,
         };
         let result = run_chat_task_with_source(&source, &request);
-        set_test_policy_override(None);
+        set_data_governance_policy_override(None);
 
         assert!(result.is_err());
         let error = result.err().unwrap_or_default();
         assert!(error.contains("requires explicit export approval"));
+    }
+
+    #[test]
+    fn chat_task_remote_api_is_blocked_in_quarantine_mode_when_endpoint_not_recovery_allowlisted() {
+        set_data_governance_policy_override(Some(DataGovernancePolicy {
+            workspace_classification: WorkspaceClassification::Internal,
+            remote_egress_allowed: true,
+            export_approval_required: false,
+            export_approved: false,
+            retention_days: None,
+            custom_block_patterns: Vec::new(),
+        }));
+        set_trust_policy_override(Some(permissive_trust_policy()));
+        set_quarantine_policy_override(Some(active_quarantine_policy_with_allowlist(vec![
+            "https://recovery.example".to_string(),
+        ])));
+
+        let source = SourceEntry {
+            id: "api-openai".to_string(),
+            display_name: "OpenAI API".to_string(),
+            kind: SourceKind::ApiModel,
+            target: "https://api.openai.com/v1".to_string(),
+            enabled: true,
+            eligible_roles: vec![SourceRole::Chat],
+            default_roles: vec![SourceRole::Chat],
+            confidential_endpoint: None,
+        };
+        let request = ChatTaskRequest::new("summarize safe text", 64);
+        assert!(request.is_ok());
+        let request = match request {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        let result = run_chat_task_with_source(&source, &request);
+
+        set_quarantine_policy_override(None);
+        set_trust_policy_override(None);
+        set_data_governance_policy_override(None);
+
+        assert!(result.is_err());
+        let error = result.err().unwrap_or_default();
+        assert!(error.contains("recovery allow-list"));
+    }
+
+    #[test]
+    fn chat_task_remote_api_is_blocked_by_provider_allowlist_policy() {
+        set_data_governance_policy_override(Some(DataGovernancePolicy {
+            workspace_classification: WorkspaceClassification::Internal,
+            remote_egress_allowed: true,
+            export_approval_required: false,
+            export_approved: false,
+            retention_days: None,
+            custom_block_patterns: Vec::new(),
+        }));
+        set_quarantine_policy_override(None);
+        set_trust_policy_override(Some(ModelProviderTrustPolicy {
+            workspace_classification: WorkspaceClassification::Internal,
+            allowed_provider_ids: vec!["api-allowed-only".to_string()],
+            allow_local_model_class: true,
+            allow_local_compatible_api_class: true,
+            allow_remote_provider_class: true,
+            max_model_risk_tier: ModelRiskTier::High,
+            require_local_model_manifest_verified: false,
+            local_model_manifest_verified_source_ids: Vec::new(),
+            require_signed_sources: false,
+            signed_source_ids: Vec::new(),
+            model_risk_overrides: Vec::new(),
+        }));
+
+        let source = SourceEntry {
+            id: "api-openai".to_string(),
+            display_name: "OpenAI API".to_string(),
+            kind: SourceKind::ApiModel,
+            target: "https://api.openai.com/v1".to_string(),
+            enabled: true,
+            eligible_roles: vec![SourceRole::Chat],
+            default_roles: vec![SourceRole::Chat],
+            confidential_endpoint: None,
+        };
+        let request = ChatTaskRequest::new("safe prompt", 64);
+        assert!(request.is_ok());
+        let request = match request {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        let result = run_chat_task_with_source(&source, &request);
+
+        set_trust_policy_override(None);
+        set_data_governance_policy_override(None);
+
+        assert!(result.is_err());
+        let error = result.err().unwrap_or_default();
+        assert!(error.contains("not allow-listed"));
+    }
+
+    #[test]
+    fn chat_task_remote_api_is_blocked_by_model_risk_tier_policy() {
+        set_data_governance_policy_override(Some(DataGovernancePolicy {
+            workspace_classification: WorkspaceClassification::Internal,
+            remote_egress_allowed: true,
+            export_approval_required: false,
+            export_approved: false,
+            retention_days: None,
+            custom_block_patterns: Vec::new(),
+        }));
+        set_quarantine_policy_override(None);
+        set_trust_policy_override(Some(ModelProviderTrustPolicy {
+            workspace_classification: WorkspaceClassification::Internal,
+            allowed_provider_ids: vec!["api-openai".to_string()],
+            allow_local_model_class: true,
+            allow_local_compatible_api_class: true,
+            allow_remote_provider_class: true,
+            max_model_risk_tier: ModelRiskTier::Medium,
+            require_local_model_manifest_verified: false,
+            local_model_manifest_verified_source_ids: Vec::new(),
+            require_signed_sources: false,
+            signed_source_ids: Vec::new(),
+            model_risk_overrides: vec![("gpt-5.2".to_string(), ModelRiskTier::High)],
+        }));
+
+        let source = SourceEntry {
+            id: "api-openai".to_string(),
+            display_name: "OpenAI API".to_string(),
+            kind: SourceKind::ApiModel,
+            target: "https://api.openai.com/v1".to_string(),
+            enabled: true,
+            eligible_roles: vec![SourceRole::Chat],
+            default_roles: vec![SourceRole::Chat],
+            confidential_endpoint: None,
+        };
+        let request = ChatTaskRequest::new("safe prompt", 64);
+        assert!(request.is_ok());
+        let request = match request {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        let result = run_chat_task_with_source(&source, &request);
+
+        set_trust_policy_override(None);
+        set_data_governance_policy_override(None);
+
+        assert!(result.is_err());
+        let error = result.err().unwrap_or_default();
+        assert!(error.contains("risk tier"));
+        assert!(error.contains("exceeds"));
+    }
+
+    #[test]
+    fn confidential_chat_task_is_blocked_when_quarantine_mode_enabled() {
+        set_data_governance_policy_override(Some(DataGovernancePolicy {
+            workspace_classification: WorkspaceClassification::Internal,
+            remote_egress_allowed: true,
+            export_approval_required: false,
+            export_approved: false,
+            retention_days: None,
+            custom_block_patterns: Vec::new(),
+        }));
+        set_trust_policy_override(Some(permissive_trust_policy()));
+        set_quarantine_policy_override(Some(active_quarantine_policy_with_allowlist(vec![
+            "https://api.openai.com".to_string(),
+        ])));
+
+        let source = SourceEntry {
+            id: "api-openai".to_string(),
+            display_name: "OpenAI API".to_string(),
+            kind: SourceKind::ApiModel,
+            target: "https://api.openai.com/v1".to_string(),
+            enabled: true,
+            eligible_roles: vec![SourceRole::Chat],
+            default_roles: vec![SourceRole::Chat],
+            confidential_endpoint: Some(sample_confidential_endpoint(
+                "http://127.0.0.1:1/attest/verify".to_string(),
+            )),
+        };
+        let request = ConfidentialChatTaskRequest {
+            prompt: "hello".to_string(),
+            max_tokens: 48,
+            attestation: AttestationEvidence {
+                nonce: "nonce-quarantine".to_string(),
+                provider: "azure-teechat".to_string(),
+                measurement: "sha256:trusted-quarantine".to_string(),
+                cpu_confidential: true,
+                gpu_confidential: true,
+                issued_at_unix_ms: 1_700_000_000_000,
+                expires_at_unix_ms: 1_700_000_360_000,
+                signature: "sig".to_string(),
+            },
+            policy: ConfidentialRelayPolicy {
+                mode: ConfidentialRelayMode::Required,
+                require_confidential_cpu: true,
+                require_confidential_gpu: false,
+                max_attestation_age_ms: 120_000,
+            },
+            fallback_consent: Some(ConfidentialFallbackConsent {
+                allow_remote_fallback: false,
+                captured_at_unix_ms: 1_700_000_000_000,
+                source: "tests.provider_adapter".to_string(),
+            }),
+        };
+        let mut store = ConfidentialRelaySessionStore::new();
+        let result = run_confidential_chat_task_with_source(
+            &source,
+            &request,
+            &mut store,
+            1_700_000_000_000,
+        );
+
+        set_quarantine_policy_override(None);
+        set_trust_policy_override(None);
+        set_data_governance_policy_override(None);
+
+        assert!(result.is_err());
+        let error = result.err().unwrap_or_default();
+        assert!(error.contains("relay mode is disabled"));
+        assert!(store.latest_session().is_none());
     }
 
     #[test]
