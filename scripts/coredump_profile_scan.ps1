@@ -1,5 +1,6 @@
 param(
-    [int]$FailOnFindings = 1
+    [int]$FailOnFindings = 1,
+    [string]$ReportPath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -53,6 +54,22 @@ elseif ($IsWindows) {
             Add-Finding "Windows WER LocalDumps is present but unreadable"
         }
     }
+}
+
+if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
+    $reportDir = Split-Path -Parent $ReportPath
+    if (-not [string]::IsNullOrWhiteSpace($reportDir) -and -not (Test-Path $reportDir)) {
+        New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
+    }
+    $report = [PSCustomObject]@{
+        schema_version   = 1
+        generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+        check            = "coredump_profile_scan"
+        findings_count   = $findings.Count
+        findings         = @($findings)
+        passed           = ($findings.Count -eq 0)
+    }
+    $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $ReportPath -Encoding UTF8
 }
 
 if ($findings.Count -gt 0) {

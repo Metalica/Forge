@@ -327,7 +327,7 @@ fn is_overbroad_permission_set(permissions: &[ExtensionPermission]) -> bool {
         .filter(|permission| is_high_risk_extension_permission(**permission))
         .count();
 
-    (has_shell && has_network) || (has_network && has_write_surface) || high_risk_count >= 3
+    ((has_shell || has_write_surface) && has_network) || high_risk_count >= 3
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

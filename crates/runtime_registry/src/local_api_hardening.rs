@@ -1,9 +1,14 @@
 use crate::source_registry::{SourceEntry, SourceKind};
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::Path;
 use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_PROVIDER_ADAPTER_AUDIT_EVENTS: usize = 4096;
+const PROVIDER_ADAPTER_AUDIT_SCHEMA_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProviderAdapterRouteClass {
     LocalBridge,
     RemoteApi,
@@ -18,7 +23,7 @@ impl ProviderAdapterRouteClass {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProviderAdapterAuditDecision {
     Allowed,
     Denied,
@@ -33,8 +38,9 @@ impl ProviderAdapterAuditDecision {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderAdapterAuditEvent {
+    pub at_unix_ms: u64,
     pub operation: String,
     pub source_id: String,
     pub source_kind: String,
@@ -44,6 +50,12 @@ pub struct ProviderAdapterAuditEvent {
     pub provenance: String,
     pub decision: ProviderAdapterAuditDecision,
     pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PersistedProviderAdapterAuditLog {
+    schema_version: u32,
+    events: Vec<ProviderAdapterAuditEvent>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +82,27 @@ pub fn latest_provider_adapter_audit_events(limit: usize) -> Vec<ProviderAdapter
     };
     let start = guard.len().saturating_sub(limit);
     guard[start..].to_vec()
+}
+
+pub fn save_redacted_provider_adapter_audit_events_to_path(path: &Path) -> Result<(), String> {
+    let events = {
+        let guard = provider_adapter_audit_log()
+            .lock()
+            .map_err(|_| "provider adapter audit log lock poisoned".to_string())?;
+        guard.clone()
+    };
+    let payload = PersistedProviderAdapterAuditLog {
+        schema_version: PROVIDER_ADAPTER_AUDIT_SCHEMA_VERSION,
+        events,
+    };
+    let encoded = serde_json::to_string_pretty(&payload)
+        .map_err(|error| format!("provider adapter audit serialization failed: {error}"))?;
+    fs::write(path, encoded).map_err(|error| {
+        format!(
+            "provider adapter audit write failed at {}: {error}",
+            path.display()
+        )
+    })
 }
 
 pub fn guard_and_audit_provider_route<T, F>(
@@ -226,19 +259,29 @@ fn record_provider_adapter_audit_event(
 ) {
     let sanitized_target = sanitize_target_for_audit(source.target.as_str());
     let event = ProviderAdapterAuditEvent {
+        at_unix_ms: now_unix_ms(),
         operation: clip_text(operation.trim(), 48),
-        source_id: source.id.clone(),
+        source_id: clip_text(redact_secret_like_tokens(source.id.as_str()).as_str(), 96),
         source_kind: match source.kind {
             SourceKind::LocalModel => "local_model".to_string(),
             SourceKind::ApiModel => "api_model".to_string(),
             SourceKind::SidecarBridge => "sidecar_bridge".to_string(),
         },
-        target: clip_text(sanitized_target.as_str(), 160),
+        target: clip_text(
+            redact_secret_like_tokens(sanitized_target.as_str()).as_str(),
+            160,
+        ),
         route_class: context.route_class,
-        trust_label: context.trust_label.clone(),
-        provenance: context.provenance.clone(),
+        trust_label: clip_text(
+            redact_secret_like_tokens(context.trust_label.as_str()).as_str(),
+            160,
+        ),
+        provenance: clip_text(
+            redact_secret_like_tokens(context.provenance.as_str()).as_str(),
+            240,
+        ),
         decision,
-        detail: clip_text(detail.trim(), 240),
+        detail: clip_text(redact_secret_like_tokens(detail.trim()).as_str(), 240),
     };
     let mut guard = match provider_adapter_audit_log().lock() {
         Ok(value) => value,
@@ -258,6 +301,60 @@ fn clip_text(value: &str, max_chars: usize) -> String {
         return value.to_string();
     }
     value.chars().take(max_chars).collect::<String>() + "..."
+}
+
+fn redact_secret_like_tokens(input: &str) -> String {
+    let mut output = input.to_string();
+    output = redact_prefixed_tokens(output.as_str(), "sk-", 20);
+    output = redact_prefixed_tokens(output.as_str(), "bearer ", 24);
+    output = redact_prefixed_tokens(output.as_str(), "authorization: bearer ", 24);
+    output
+}
+
+fn redact_prefixed_tokens(input: &str, prefix: &str, min_token_len: usize) -> String {
+    let mut output = String::with_capacity(input.len());
+    let lowercase = input.to_ascii_lowercase();
+    let mut index = 0usize;
+    while index < input.len() {
+        let remaining = &lowercase[index..];
+        if remaining.starts_with(prefix) {
+            let token_end = find_token_boundary(input, index + prefix.len());
+            if token_end.saturating_sub(index) >= min_token_len {
+                output.push_str("[REDACTED]");
+                index = token_end;
+                continue;
+            }
+        }
+        if let Some(ch) = input[index..].chars().next() {
+            output.push(ch);
+            index += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    output
+}
+
+fn find_token_boundary(value: &str, start: usize) -> usize {
+    let mut end = start;
+    while end < value.len() {
+        let Some(ch) = value[end..].chars().next() else {
+            break;
+        };
+        if ch.is_whitespace() || ch == '"' || ch == '\'' || ch == ',' || ch == ';' {
+            break;
+        }
+        end += ch.len_utf8();
+    }
+    end
+}
+
+fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn normalize_target_for_policy_scan(target: &str) -> String {
@@ -382,9 +479,22 @@ fn strip_authority_userinfo(authority: &str) -> String {
 mod tests {
     use super::{
         ProviderAdapterAuditDecision, guard_and_audit_provider_route,
-        latest_provider_adapter_audit_events,
+        latest_provider_adapter_audit_events, save_redacted_provider_adapter_audit_events_to_path,
     };
     use crate::source_registry::{SourceEntry, SourceKind, SourceRole};
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_path(prefix: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        path.push(format!("forge_provider_audit_{prefix}_{nonce}.json"));
+        path
+    }
 
     #[test]
     fn hardening_blocks_allowlist_bypass_when_allowed_path_appears_only_in_query() {
@@ -454,5 +564,38 @@ mod tests {
         assert!(!event.target.contains("forge-user"));
         assert!(!event.target.contains("api_key"));
         assert!(!event.target.contains("sk-test-secret"));
+    }
+
+    #[test]
+    fn exported_provider_audit_log_redacts_secret_like_detail_tokens() {
+        let source = SourceEntry {
+            id: "provider-audit-export-redaction".to_string(),
+            display_name: "Provider Audit Export Redaction".to_string(),
+            kind: SourceKind::ApiModel,
+            target: "https://api.openai.com/v1/chat/completions".to_string(),
+            enabled: true,
+            eligible_roles: vec![SourceRole::Chat],
+            default_roles: vec![SourceRole::Chat],
+            confidential_endpoint: None,
+        };
+        let _: Result<(), String> = guard_and_audit_provider_route(&source, "chat", || {
+            Err("authorization: bearer sk-live-secret-token-1234567890".to_string())
+        });
+
+        let path = unique_temp_path("export_redaction");
+        let saved = save_redacted_provider_adapter_audit_events_to_path(path.as_path());
+        assert!(saved.is_ok());
+
+        let raw = fs::read_to_string(path.as_path());
+        assert!(raw.is_ok());
+        let raw = match raw {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        assert!(raw.contains("\"schema_version\""));
+        assert!(raw.contains("[REDACTED]"));
+        assert!(!raw.contains("sk-live-secret-token-1234567890"));
+
+        let _ = fs::remove_file(path);
     }
 }

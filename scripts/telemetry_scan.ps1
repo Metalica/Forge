@@ -1,5 +1,6 @@
 param(
-    [switch]$FailOnFindings = $true
+    [switch]$FailOnFindings = $true,
+    [string]$ReportPath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -68,6 +69,22 @@ else {
             }
         }
     }
+}
+
+if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
+    $reportDir = Split-Path -Parent $ReportPath
+    if (-not [string]::IsNullOrWhiteSpace($reportDir) -and -not (Test-Path $reportDir)) {
+        New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
+    }
+    $report = [PSCustomObject]@{
+        schema_version   = 1
+        generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+        check            = "telemetry_scan"
+        findings_count   = $results.Count
+        findings         = @($results | Sort-Object -Unique)
+        passed           = ($results.Count -eq 0)
+    }
+    $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $ReportPath -Encoding UTF8
 }
 
 if ($results.Count -gt 0) {

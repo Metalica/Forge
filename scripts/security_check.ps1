@@ -6,10 +6,18 @@ $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
 
 & "$PSScriptRoot\bootstrap_env.ps1"
-& "$PSScriptRoot\process_cmdline_secret_scan.ps1"
-& "$PSScriptRoot\process_dumpability_scan.ps1"
-& "$PSScriptRoot\coredump_profile_scan.ps1"
-& "$PSScriptRoot\broker_audit_export_check.ps1"
+$workspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$securityArtifactRoot = Join-Path $workspaceRoot ".tmp\security"
+if (-not (Test-Path $securityArtifactRoot)) {
+    New-Item -ItemType Directory -Path $securityArtifactRoot -Force | Out-Null
+}
+
+& "$PSScriptRoot\process_cmdline_secret_scan.ps1" -ReportPath (Join-Path $securityArtifactRoot "process_cmdline_secret_scan_report.json")
+& "$PSScriptRoot\process_dumpability_scan.ps1" -ReportPath (Join-Path $securityArtifactRoot "process_dumpability_scan_report.json")
+& "$PSScriptRoot\coredump_profile_scan.ps1" -ReportPath (Join-Path $securityArtifactRoot "coredump_profile_scan_report.json")
+& "$PSScriptRoot\telemetry_split_redaction_check.ps1"
+& "$PSScriptRoot\kek_custody_matrix_check.ps1"
+& "$PSScriptRoot\p0_acceptance_evidence_bundle.ps1"
 
 function Invoke-Checked {
     param(

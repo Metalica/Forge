@@ -73,6 +73,15 @@ pub struct McpBridge {
     sessions: HashMap<String, McpBridgeSession>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpScopedTokenIssueRequest {
+    pub extension_id: String,
+    pub audience: String,
+    pub scopes: Vec<String>,
+    pub ttl_ms: u64,
+    pub now_unix_ms: u64,
+}
+
 impl McpBridge {
     pub fn new() -> Self {
         Self::default()
@@ -120,12 +129,8 @@ impl McpBridge {
     pub fn issue_scoped_token(
         &self,
         host: &mut ExtensionHost,
-        extension_id: &str,
         session_id: &str,
-        audience: &str,
-        scopes: Vec<String>,
-        ttl_ms: u64,
-        now_unix_ms: u64,
+        request: McpScopedTokenIssueRequest,
     ) -> Result<McpScopedToken, McpBridgeError> {
         let trimmed_session_id = session_id.trim();
         if trimmed_session_id.is_empty() {
@@ -136,7 +141,7 @@ impl McpBridge {
                 trimmed_session_id.to_string(),
             ));
         };
-        let requested_extension_id = extension_id.trim();
+        let requested_extension_id = request.extension_id.trim();
         if requested_extension_id.is_empty() {
             return Err(McpBridgeError::InvalidExtensionId);
         }
@@ -150,10 +155,10 @@ impl McpBridge {
         host.issue_mcp_scoped_token(
             requested_extension_id,
             trimmed_session_id,
-            audience,
-            scopes,
-            ttl_ms,
-            now_unix_ms,
+            request.audience.as_str(),
+            request.scopes,
+            request.ttl_ms,
+            request.now_unix_ms,
         )
         .map_err(McpBridgeError::TokenIssue)
     }
@@ -231,7 +236,7 @@ impl McpBridge {
 
 #[cfg(test)]
 mod tests {
-    use super::{McpBridge, McpBridgeError};
+    use super::{McpBridge, McpBridgeError, McpScopedTokenIssueRequest};
     use crate::extension_host::{McpTokenAuthorizationError, default_extension_host};
 
     fn setup_enabled_provider_host() -> crate::extension_host::ExtensionHost {
@@ -255,12 +260,14 @@ mod tests {
 
         let issued = bridge.issue_scoped_token(
             &mut host,
-            "provider-openai",
             "session-1",
-            "mcp://tools/chat",
-            vec!["provider.chat".to_string()],
-            5_000,
-            1_100,
+            McpScopedTokenIssueRequest {
+                extension_id: "provider-openai".to_string(),
+                audience: "mcp://tools/chat".to_string(),
+                scopes: vec!["provider.chat".to_string()],
+                ttl_ms: 5_000,
+                now_unix_ms: 1_100,
+            },
         );
         assert!(issued.is_ok());
         let issued = match issued {
@@ -310,12 +317,14 @@ mod tests {
         let bridge = McpBridge::new();
         let issued = bridge.issue_scoped_token(
             &mut host,
-            "provider-openai",
             "unknown-session",
-            "mcp://tools/chat",
-            vec!["provider.chat".to_string()],
-            5_000,
-            1_100,
+            McpScopedTokenIssueRequest {
+                extension_id: "provider-openai".to_string(),
+                audience: "mcp://tools/chat".to_string(),
+                scopes: vec!["provider.chat".to_string()],
+                ttl_ms: 5_000,
+                now_unix_ms: 1_100,
+            },
         );
         assert!(issued.is_err());
         let issued = match issued {
@@ -336,12 +345,14 @@ mod tests {
         );
         let issued = bridge.issue_scoped_token(
             &mut host,
-            "viewer-session-inspector",
             "session-1",
-            "mcp://tools/chat",
-            vec!["provider.chat".to_string()],
-            5_000,
-            1_100,
+            McpScopedTokenIssueRequest {
+                extension_id: "viewer-session-inspector".to_string(),
+                audience: "mcp://tools/chat".to_string(),
+                scopes: vec!["provider.chat".to_string()],
+                ttl_ms: 5_000,
+                now_unix_ms: 1_100,
+            },
         );
         assert!(issued.is_err());
         let issued = match issued {
@@ -405,12 +416,14 @@ mod tests {
 
         let issued_a = bridge.issue_scoped_token(
             &mut host,
-            "provider-openai",
             "session-a",
-            "mcp://tools/chat",
-            vec!["provider.chat".to_string()],
-            5_000,
-            1_200,
+            McpScopedTokenIssueRequest {
+                extension_id: "provider-openai".to_string(),
+                audience: "mcp://tools/chat".to_string(),
+                scopes: vec!["provider.chat".to_string()],
+                ttl_ms: 5_000,
+                now_unix_ms: 1_200,
+            },
         );
         assert!(issued_a.is_ok());
         let issued_a = match issued_a {
@@ -420,12 +433,14 @@ mod tests {
 
         let issued_b = bridge.issue_scoped_token(
             &mut host,
-            "provider-openai",
             "session-b",
-            "mcp://tools/chat",
-            vec!["provider.chat".to_string()],
-            5_000,
-            1_300,
+            McpScopedTokenIssueRequest {
+                extension_id: "provider-openai".to_string(),
+                audience: "mcp://tools/chat".to_string(),
+                scopes: vec!["provider.chat".to_string()],
+                ttl_ms: 5_000,
+                now_unix_ms: 1_300,
+            },
         );
         assert!(issued_b.is_ok());
         let issued_b = match issued_b {
