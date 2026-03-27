@@ -13,6 +13,7 @@ mod tests {
         evaluate_flag_parity_with_env, evaluate_registry_with_default_checks,
         find_latest_gate_artifact_path, format_agent_graph, format_agent_trace_filtered,
         format_allocator_mode_status, format_confidential_relay_feature_status,
+        format_confidential_visibility_status,
         format_dense_math_status, format_extension_inventory_summary,
         format_extension_target_detail, format_feature_policy_snapshot, format_file_list,
         format_flag_parity, format_gate_artifact_status, format_gate_env_commands,
@@ -50,7 +51,9 @@ mod tests {
     use floem::reactive::{RwSignal, SignalGet, SignalUpdate};
     use runtime_registry::health::{RuntimeRegistry, UpdateResult, default_llama_runtime};
     use runtime_registry::process::{RuntimeLaunchRequest, RuntimeProcessManager, StartResult};
-    use runtime_registry::source_registry::{SourceKind, SourceRole, default_source_registry};
+    use runtime_registry::source_registry::{
+        SourceEntry, SourceKind, SourceRole, default_source_registry,
+    };
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::fs;
@@ -1477,6 +1480,63 @@ mod tests {
             Ok(runtime_registry::confidential_relay::ConfidentialRelayMode::Disabled)
         ));
         assert!(parse_confidential_mode_input("maybe").is_err());
+    }
+
+    #[test]
+    fn confidential_visibility_status_formats_remote_tls_fields() {
+        let source = SourceEntry {
+            id: "api-openai".to_string(),
+            display_name: "OpenAI".to_string(),
+            kind: SourceKind::ApiModel,
+            target: "https://api.openai.com/v1/chat/completions".to_string(),
+            enabled: true,
+            eligible_roles: vec![SourceRole::Chat],
+            default_roles: vec![SourceRole::Chat],
+            confidential_endpoint: None,
+        };
+        let status = format_confidential_visibility_status(
+            &source,
+            "forge-manual",
+            "verified",
+            "verified",
+            "mode=TlsHttps,transport_encrypted=true",
+            "not_used",
+            true,
+        );
+        assert!(status.contains("location=remote://api.openai.com"));
+        assert!(status.contains("runtime_class=remote_api_model"));
+        assert!(status.contains("network_state=remote_tls"));
+        assert!(status.contains("provider=forge-manual"));
+        assert!(status.contains("relay_status=verified"));
+        assert!(status.contains("attestation_status=verified"));
+        assert!(status.contains("fallback_state=not_used"));
+        assert!(status.contains("logging_policy=provider_audit_redacted_export_only"));
+    }
+
+    #[test]
+    fn confidential_visibility_status_formats_local_fields() {
+        let source = SourceEntry {
+            id: "local-llama".to_string(),
+            display_name: "llama.cpp".to_string(),
+            kind: SourceKind::LocalModel,
+            target: "http://127.0.0.1:8080/completion".to_string(),
+            enabled: true,
+            eligible_roles: vec![SourceRole::Chat],
+            default_roles: vec![SourceRole::Chat],
+            confidential_endpoint: None,
+        };
+        let status = format_confidential_visibility_status(
+            &source,
+            "n/a",
+            "failed",
+            "not_verified",
+            "configured_mode=TlsHttps,transport_encrypted_expected=true",
+            "blocked(no explicit consent)",
+            false,
+        );
+        assert!(status.contains("location=local://http://127.0.0.1:8080/completion"));
+        assert!(status.contains("runtime_class=local_model_runtime"));
+        assert!(status.contains("network_state=local_process_only"));
     }
 
     #[test]

@@ -1,3 +1,67 @@
+const CONFIDENTIAL_LOGGING_POLICY_LABEL: &str = "provider_audit_redacted_export_only";
+
+fn source_runtime_class_label(kind: SourceKind) -> &'static str {
+    match kind {
+        SourceKind::LocalModel => "local_model_runtime",
+        SourceKind::ApiModel => "remote_api_model",
+        SourceKind::SidecarBridge => "remote_sidecar_bridge",
+    }
+}
+
+fn source_location_label(source: &SourceEntry) -> String {
+    let target = source.target.trim();
+    if matches!(source.kind, SourceKind::LocalModel) {
+        return format!("local://{target}");
+    }
+    let authority = target
+        .split_once("://")
+        .map(|(_, remainder)| remainder)
+        .unwrap_or(target)
+        .split('/')
+        .next()
+        .unwrap_or(target)
+        .trim();
+    if authority.is_empty() {
+        "remote://unknown".to_string()
+    } else {
+        format!("remote://{authority}")
+    }
+}
+
+fn source_network_state_label(source: &SourceEntry, transport_encrypted: bool) -> &'static str {
+    if matches!(source.kind, SourceKind::LocalModel) {
+        return "local_process_only";
+    }
+    if transport_encrypted {
+        "remote_tls"
+    } else {
+        "remote_insecure"
+    }
+}
+
+fn format_confidential_visibility_status(
+    source: &SourceEntry,
+    provider: &str,
+    relay_status: &str,
+    attestation_status: &str,
+    encryption_status: &str,
+    fallback_state: &str,
+    transport_encrypted: bool,
+) -> String {
+    format!(
+        "location={} runtime_class={} network_state={} provider={} relay_status={} attestation_status={} encryption_status={} fallback_state={} logging_policy={}",
+        source_location_label(source),
+        source_runtime_class_label(source.kind),
+        source_network_state_label(source, transport_encrypted),
+        clip_text(provider, 48),
+        relay_status,
+        attestation_status,
+        clip_text(encryption_status, 72),
+        fallback_state,
+        CONFIDENTIAL_LOGGING_POLICY_LABEL
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn chat_panel(
     runtime_version: RwSignal<String>,
@@ -420,6 +484,11 @@ fn chat_panel(
                     max_attestation_age_ms,
                 },
             };
+            let expected_transport_encrypted = true;
+            let configured_encryption_status = format!(
+                "configured_mode={:?},transport_encrypted_expected={}",
+                confidential_metadata.encryption_mode, expected_transport_encrypted
+            );
 
             let tracked_job_id = queue_start_tracked_job(
                 &queue,
@@ -447,6 +516,19 @@ fn chat_panel(
 
             match result {
                 Ok(response) => {
+                    let encryption_status = format!(
+                        "mode={:?},transport_encrypted={}",
+                        response.encryption_mode, response.transport_encrypted
+                    );
+                    let visibility = format_confidential_visibility_status(
+                        &chat_source,
+                        response.attestation_provider.as_str(),
+                        "verified",
+                        "verified",
+                        encryption_status.as_str(),
+                        "not_used",
+                        response.transport_encrypted,
+                    );
                     let baseline_remote_ms = chat_routed_baseline_latency_ms.get();
                     let overhead_text = match baseline_remote_ms {
                         Some(baseline) if baseline > 0 => {
@@ -471,7 +553,7 @@ fn chat_panel(
                             .unwrap_or_else(|| "n/a".to_string())
                     ));
                     chat_confidential_status.set(format!(
-                        "verified session={} key={} nonce={} provider={} measurement={} expires={} enc={:?} transport_encrypted={} mode={:?} req_cpu={} req_gpu={} verify_ms={} relay_ms={} total_ms={} fallback_consent={} fallback_state=not_used {}",
+                        "verified session={} key={} nonce={} provider={} measurement={} expires={} enc={:?} transport_encrypted={} mode={:?} req_cpu={} req_gpu={} verify_ms={} relay_ms={} total_ms={} fallback_consent={} fallback_state=not_used {} | {}",
                         response.session_id,
                         clip_text(&response.session_key_id, 32),
                         clip_text(&response.request_nonce, 32),
@@ -487,7 +569,8 @@ fn chat_panel(
                         response.relay_roundtrip_ms,
                         response.total_path_ms,
                         allow_remote_fallback,
-                        overhead_text
+                        overhead_text,
+                        visibility
                     ));
                     let _ = queue_complete_tracked_job(
                         &queue,
@@ -506,11 +589,21 @@ fn chat_panel(
                         let fallback_request = match fallback_request {
                             Ok(value) => value,
                             Err(request_error) => {
+                                let visibility = format_confidential_visibility_status(
+                                    &chat_source,
+                                    "n/a",
+                                    "failed",
+                                    "not_verified",
+                                    configured_encryption_status.as_str(),
+                                    "blocked",
+                                    expected_transport_encrypted,
+                                );
                                 chat_confidential_status.set(format!(
-                                    "confidential relay failed via {}: {} | fallback blocked: {}",
+                                    "confidential relay failed via {}: {} | fallback blocked: {} | {}",
                                     chat_source.display_name,
                                     relay_error,
-                                    clip_text(&request_error, 120)
+                                    clip_text(&request_error, 120),
+                                    visibility
                                 ));
                                 let _ = queue_fail_tracked_job(
                                     &queue,
@@ -551,6 +644,17 @@ fn chat_panel(
                             Ok(fallback_response) => {
                                 let fallback_ms = unix_time_ms_now().saturating_sub(fallback_start);
                                 chat_routed_baseline_latency_ms.set(Some(fallback_ms));
+                                let fallback_transport_encrypted =
+                                    chat_source.target.trim().starts_with("https://");
+                                let visibility = format_confidential_visibility_status(
+                                    &chat_source,
+                                    "n/a",
+                                    "failed",
+                                    "not_verified_after_fallback",
+                                    "relay_not_used_after_fallback",
+                                    "remote_consented",
+                                    fallback_transport_encrypted,
+                                );
                                 chat_output.set(fallback_response.output_text);
                                 chat_status.set(format!(
                                     "fallback ok via {} route={} tokens={} remote_ms={}",
@@ -563,11 +667,12 @@ fn chat_panel(
                                     fallback_ms
                                 ));
                                 chat_confidential_status.set(format!(
-                                    "confidential relay failed via {}: {} | fallback_state=remote_consented route={} remote_ms={}",
+                                    "confidential relay failed via {}: {} | fallback_state=remote_consented route={} remote_ms={} | {}",
                                     chat_source.display_name,
                                     relay_error,
                                     fallback_response.route,
-                                    fallback_ms
+                                    fallback_ms,
+                                    visibility
                                 ));
                                 let _ = queue_complete_tracked_job(
                                     &queue,
@@ -581,11 +686,21 @@ fn chat_panel(
                             }
                             Err(fallback_error) => {
                                 chat_routed_baseline_latency_ms.set(None);
+                                let visibility = format_confidential_visibility_status(
+                                    &chat_source,
+                                    "n/a",
+                                    "failed",
+                                    "not_verified_after_fallback_failure",
+                                    "relay_not_used_after_fallback_failure",
+                                    "remote_consented_failed",
+                                    expected_transport_encrypted,
+                                );
                                 chat_confidential_status.set(format!(
-                                    "confidential relay failed via {}: {} | fallback_state=remote_consented_failed reason={}",
+                                    "confidential relay failed via {}: {} | fallback_state=remote_consented_failed reason={} | {}",
                                     chat_source.display_name,
                                     relay_error,
-                                    clip_text(&fallback_error, 160)
+                                    clip_text(&fallback_error, 160),
+                                    visibility
                                 ));
                                 let _ = queue_fail_tracked_job(
                                     &queue,
@@ -605,10 +720,20 @@ fn chat_panel(
                             }
                         }
                     } else {
+                        let visibility = format_confidential_visibility_status(
+                            &chat_source,
+                            "n/a",
+                            "failed",
+                            "not_verified",
+                            configured_encryption_status.as_str(),
+                            "blocked(no explicit consent)",
+                            expected_transport_encrypted,
+                        );
                         chat_confidential_status.set(format!(
-                            "confidential relay failed via {}: {} | fallback_state=blocked(no explicit consent)",
+                            "confidential relay failed via {}: {} | fallback_state=blocked(no explicit consent) | {}",
                             chat_source.display_name,
-                            relay_error
+                            relay_error,
+                            visibility
                         ));
                         let _ = queue_fail_tracked_job(
                             &queue,
