@@ -52,8 +52,9 @@ use runtime_registry::{
         run_llama_cpp_completion,
     },
     provider_adapter::{
-        ChatTaskRequest, CodexSpecialistTaskRequest, ConfidentialChatTaskRequest, RoleTaskRequest,
-        run_chat_task_with_source, run_codex_specialist_task,
+        ChatTaskRequest, CodexSpecialistTaskRequest, ConfidentialChatTaskRequest,
+        ConfidentialFallbackConsent, RoleTaskRequest, run_chat_task_with_source,
+        run_codex_specialist_task,
         run_confidential_chat_task_with_source, run_role_task_with_source,
     },
     source_registry::{

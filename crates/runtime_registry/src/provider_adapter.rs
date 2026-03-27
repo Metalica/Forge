@@ -2,7 +2,7 @@ use crate::confidential_relay::{
     AttestationEvidence, ConfidentialRelayMode, ConfidentialRelayPolicy,
     ConfidentialRelaySessionRecord, ConfidentialRelaySessionStore, RelayEncryptionMode,
     allow_insecure_localhost_http_endpoint, build_confidential_session_id,
-    build_confidential_session_key_id, verify_attestation,
+    build_confidential_policy_identity, build_confidential_session_key_id, verify_attestation,
 };
 use crate::local_api_hardening::guard_and_audit_provider_route;
 use crate::openjarvis_bridge::{
@@ -141,11 +141,35 @@ pub struct ChatTaskResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfidentialFallbackConsent {
+    pub allow_remote_fallback: bool,
+    pub captured_at_unix_ms: u64,
+    pub source: String,
+}
+
+impl ConfidentialFallbackConsent {
+    fn validate(&self) -> Result<(), ProviderAdapterValidationError> {
+        if self.captured_at_unix_ms == 0 {
+            return Err(ProviderAdapterValidationError::new(
+                "fallback consent captured_at_unix_ms must be greater than zero",
+            ));
+        }
+        if self.source.trim().is_empty() {
+            return Err(ProviderAdapterValidationError::new(
+                "fallback consent source cannot be empty",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfidentialChatTaskRequest {
     pub prompt: String,
     pub max_tokens: u32,
     pub attestation: AttestationEvidence,
     pub policy: ConfidentialRelayPolicy,
+    pub fallback_consent: Option<ConfidentialFallbackConsent>,
 }
 
 impl ConfidentialChatTaskRequest {
@@ -166,6 +190,9 @@ impl ConfidentialChatTaskRequest {
         self.attestation
             .validate()
             .map_err(|error| ProviderAdapterValidationError::new(error.to_string()))?;
+        if let Some(consent) = self.fallback_consent.as_ref() {
+            consent.validate()?;
+        }
         Ok(())
     }
 }
@@ -191,6 +218,13 @@ pub struct ConfidentialChatTaskResponse {
     pub cpu_confidential: bool,
     pub gpu_confidential: bool,
     pub encryption_mode: RelayEncryptionMode,
+    pub policy_identity: String,
+    pub declared_logging_policy: String,
+    pub fallback_consent_required: bool,
+    pub fallback_consent_granted: bool,
+    pub fallback_consent_source: Option<String>,
+    pub fallback_consent_captured_at_unix_ms: Option<u64>,
+    pub fallback_state: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -359,11 +393,33 @@ pub fn run_confidential_chat_task_with_source(
         build_confidential_session_key_id(&source.id, now_unix_ms, &request.attestation.nonce);
     let request_nonce = request.attestation.nonce.trim().to_string();
     let transport_encrypted = true;
+    let policy_identity = build_confidential_policy_identity(&source.id, endpoint, &request.policy);
+    let declared_logging_policy = if endpoint.declared_logging_policy.trim().is_empty() {
+        crate::confidential_relay::default_declared_logging_policy()
+    } else {
+        endpoint.declared_logging_policy.trim().to_string()
+    };
+    let fallback_consent_required = request.fallback_consent.is_some();
+    let fallback_consent_granted = request
+        .fallback_consent
+        .as_ref()
+        .map(|value| value.allow_remote_fallback)
+        .unwrap_or(false);
+    let fallback_consent_source = request
+        .fallback_consent
+        .as_ref()
+        .map(|value| value.source.trim().to_string())
+        .unwrap_or_default();
+    let fallback_consent_captured_at_unix_ms = request
+        .fallback_consent
+        .as_ref()
+        .map(|value| value.captured_at_unix_ms);
 
     let record = ConfidentialRelaySessionRecord {
         session_id: session_id.clone(),
         session_key_id: session_key_id.clone(),
         request_nonce: request_nonce.clone(),
+        policy_identity: policy_identity.clone(),
         source_id: source.id.clone(),
         source_display_name: source.display_name.clone(),
         route: response.route.clone(),
@@ -378,6 +434,12 @@ pub fn run_confidential_chat_task_with_source(
         cpu_confidential: verified.cpu_confidential,
         gpu_confidential: verified.gpu_confidential,
         encryption_mode: endpoint.encryption_mode,
+        declared_logging_policy: declared_logging_policy.clone(),
+        fallback_consent_required,
+        fallback_consent_granted,
+        fallback_consent_source: fallback_consent_source.clone(),
+        fallback_consent_captured_at_unix_ms,
+        fallback_state: "not_used".to_string(),
     };
     session_store.record_session(record);
 
@@ -401,6 +463,17 @@ pub fn run_confidential_chat_task_with_source(
         cpu_confidential: verified.cpu_confidential,
         gpu_confidential: verified.gpu_confidential,
         encryption_mode: endpoint.encryption_mode,
+        policy_identity,
+        declared_logging_policy,
+        fallback_consent_required,
+        fallback_consent_granted,
+        fallback_consent_source: if fallback_consent_source.trim().is_empty() {
+            None
+        } else {
+            Some(fallback_consent_source)
+        },
+        fallback_consent_captured_at_unix_ms,
+        fallback_state: "not_used".to_string(),
     })
 }
 
@@ -1117,8 +1190,9 @@ fn normalize_path(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChatTaskRequest, CodexSpecialistTaskRequest, ConfidentialChatTaskRequest, RoleTaskRequest,
-        derive_openai_chat_completions_endpoint, run_chat_task_with_source,
+        ChatTaskRequest, CodexSpecialistTaskRequest, ConfidentialChatTaskRequest,
+        ConfidentialFallbackConsent, RoleTaskRequest, derive_openai_chat_completions_endpoint,
+        run_chat_task_with_source,
         run_codex_specialist_task, run_confidential_chat_task_with_source,
         run_role_task_with_source,
     };
@@ -1559,6 +1633,11 @@ mod tests {
                 require_confidential_gpu: true,
                 max_attestation_age_ms: 30_000,
             },
+            fallback_consent: Some(ConfidentialFallbackConsent {
+                allow_remote_fallback: false,
+                captured_at_unix_ms: now,
+                source: "tests.provider_adapter".to_string(),
+            }),
         };
         let mut store = ConfidentialRelaySessionStore::new();
         let result = run_confidential_chat_task_with_source(&source, &request, &mut store, now);
@@ -1605,6 +1684,11 @@ mod tests {
                 require_confidential_gpu: true,
                 max_attestation_age_ms: 30_000,
             },
+            fallback_consent: Some(ConfidentialFallbackConsent {
+                allow_remote_fallback: false,
+                captured_at_unix_ms: now,
+                source: "tests.provider_adapter".to_string(),
+            }),
         };
         let mut store = ConfidentialRelaySessionStore::new();
         let result = run_confidential_chat_task_with_source(&source, &request, &mut store, now);
@@ -1633,6 +1717,7 @@ mod tests {
             session_id: "relay-existing".to_string(),
             session_key_id: "relay-key-existing".to_string(),
             request_nonce: "nonce-replay".to_string(),
+            policy_identity: "fnv1a64:test".to_string(),
             source_id: source.id.clone(),
             source_display_name: source.display_name.clone(),
             route: "https://api.openai.com/v1/chat/completions".to_string(),
@@ -1647,6 +1732,12 @@ mod tests {
             cpu_confidential: true,
             gpu_confidential: true,
             encryption_mode: RelayEncryptionMode::TlsHttps,
+            declared_logging_policy: crate::confidential_relay::default_declared_logging_policy(),
+            fallback_consent_required: true,
+            fallback_consent_granted: false,
+            fallback_consent_source: "tests.provider_adapter".to_string(),
+            fallback_consent_captured_at_unix_ms: Some(now.saturating_sub(2_000)),
+            fallback_state: "not_used".to_string(),
         });
         let request = ConfidentialChatTaskRequest {
             prompt: "hello".to_string(),
@@ -1667,6 +1758,11 @@ mod tests {
                 require_confidential_gpu: true,
                 max_attestation_age_ms: 30_000,
             },
+            fallback_consent: Some(ConfidentialFallbackConsent {
+                allow_remote_fallback: false,
+                captured_at_unix_ms: now,
+                source: "tests.provider_adapter".to_string(),
+            }),
         };
 
         let result = run_confidential_chat_task_with_source(&source, &request, &mut store, now);

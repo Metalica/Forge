@@ -4,7 +4,8 @@ use runtime_registry::confidential_relay::{
     ConfidentialRelaySessionStore, RelayEncryptionMode, unix_time_ms_now,
 };
 use runtime_registry::provider_adapter::{
-    ChatTaskRequest, ConfidentialChatTaskRequest, run_chat_task_with_source,
+    ChatTaskRequest, ConfidentialChatTaskRequest, ConfidentialFallbackConsent,
+    run_chat_task_with_source,
     run_confidential_chat_task_with_source,
 };
 use runtime_registry::source_registry::{SourceEntry, SourceKind, SourceRole};
@@ -242,6 +243,11 @@ fn run() -> Result<String, String> {
                     require_confidential_gpu: true,
                     max_attestation_age_ms: 120_000,
                 },
+                fallback_consent: Some(ConfidentialFallbackConsent {
+                    allow_remote_fallback: false,
+                    captured_at_unix_ms: now,
+                    source: "bench.phase4.confidential_gate".to_string(),
+                }),
             };
             let confidential_start = Instant::now();
             let confidential_response = run_confidential_chat_task_with_source(

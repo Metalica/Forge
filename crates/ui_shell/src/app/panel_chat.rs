@@ -469,6 +469,8 @@ fn chat_panel(
 
             let now = unix_time_ms_now();
             let nonce = format!("chat-{now}-{max_tokens}");
+            let fallback_consent_captured_at_unix_ms = now;
+            let fallback_consent_source = "ui.chat.confidential_fallback_toggle".to_string();
             let attestation = AttestationEvidence {
                 provider: "forge-manual".to_string(),
                 measurement: measurement.trim().to_string(),
@@ -489,6 +491,11 @@ fn chat_panel(
                     require_confidential_gpu,
                     max_attestation_age_ms,
                 },
+                fallback_consent: Some(ConfidentialFallbackConsent {
+                    allow_remote_fallback,
+                    captured_at_unix_ms: fallback_consent_captured_at_unix_ms,
+                    source: fallback_consent_source.clone(),
+                }),
             };
             let expected_transport_encrypted = true;
             let configured_encryption_status = format!(
@@ -536,7 +543,7 @@ fn chat_panel(
                         encryption_status.as_str(),
                         "not_used",
                         response.transport_encrypted,
-                        declared_logging_policy.as_str(),
+                        response.declared_logging_policy.as_str(),
                     );
                     let baseline_remote_ms = chat_routed_baseline_latency_ms.get();
                     let overhead_text = match baseline_remote_ms {
@@ -562,10 +569,11 @@ fn chat_panel(
                             .unwrap_or_else(|| "n/a".to_string())
                     ));
                     chat_confidential_status.set(format!(
-                        "verified session={} key={} nonce={} provider={} measurement={} expires={} enc={:?} transport_encrypted={} mode={:?} req_cpu={} req_gpu={} verify_ms={} relay_ms={} total_ms={} fallback_consent={} fallback_state=not_used {} | {}",
+                        "verified session={} key={} nonce={} policy_id={} provider={} measurement={} expires={} enc={:?} transport_encrypted={} mode={:?} req_cpu={} req_gpu={} verify_ms={} relay_ms={} total_ms={} fallback_required={} fallback_consent={} fallback_consent_source={} fallback_consent_unix_ms={} fallback_state={} {} | {}",
                         response.session_id,
                         clip_text(&response.session_key_id, 32),
                         clip_text(&response.request_nonce, 32),
+                        clip_text(&response.policy_identity, 40),
                         response.attestation_provider,
                         clip_text(&response.measurement, 48),
                         response.expires_at_unix_ms,
@@ -577,7 +585,17 @@ fn chat_panel(
                         response.attestation_verify_ms,
                         response.relay_roundtrip_ms,
                         response.total_path_ms,
-                        allow_remote_fallback,
+                        response.fallback_consent_required,
+                        response.fallback_consent_granted,
+                        response
+                            .fallback_consent_source
+                            .as_deref()
+                            .unwrap_or("none"),
+                        response
+                            .fallback_consent_captured_at_unix_ms
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "none".to_string()),
+                        response.fallback_state,
                         overhead_text,
                         visibility
                     ));
@@ -608,10 +626,12 @@ fn chat_panel(
                                     declared_logging_policy.as_str(),
                                 );
                                 chat_confidential_status.set(format!(
-                                    "confidential relay failed via {}: {} | fallback blocked: {} | {}",
+                                    "confidential relay failed via {}: {} | fallback blocked: {} | consent_source={} consent_unix_ms={} | {}",
                                     chat_source.display_name,
                                     relay_error,
                                     clip_text(&request_error, 120),
+                                    fallback_consent_source,
+                                    fallback_consent_captured_at_unix_ms,
                                     visibility
                                 ));
                                 let _ = queue_fail_tracked_job(
@@ -676,11 +696,13 @@ fn chat_panel(
                                     fallback_ms
                                 ));
                                 chat_confidential_status.set(format!(
-                                    "confidential relay failed via {}: {} | fallback_state=remote_consented route={} remote_ms={} | {}",
+                                    "confidential relay failed via {}: {} | fallback_state=remote_consented route={} remote_ms={} consent_source={} consent_unix_ms={} | {}",
                                     chat_source.display_name,
                                     relay_error,
                                     fallback_response.route,
                                     fallback_ms,
+                                    fallback_consent_source,
+                                    fallback_consent_captured_at_unix_ms,
                                     visibility
                                 ));
                                 let _ = queue_complete_tracked_job(
@@ -705,10 +727,12 @@ fn chat_panel(
                                     declared_logging_policy.as_str(),
                                 );
                                 chat_confidential_status.set(format!(
-                                    "confidential relay failed via {}: {} | fallback_state=remote_consented_failed reason={} | {}",
+                                    "confidential relay failed via {}: {} | fallback_state=remote_consented_failed reason={} consent_source={} consent_unix_ms={} | {}",
                                     chat_source.display_name,
                                     relay_error,
                                     clip_text(&fallback_error, 160),
+                                    fallback_consent_source,
+                                    fallback_consent_captured_at_unix_ms,
                                     visibility
                                 ));
                                 let _ = queue_fail_tracked_job(
@@ -739,9 +763,11 @@ fn chat_panel(
                             declared_logging_policy.as_str(),
                         );
                         chat_confidential_status.set(format!(
-                            "confidential relay failed via {}: {} | fallback_state=blocked(no explicit consent) | {}",
+                            "confidential relay failed via {}: {} | fallback_state=blocked(no explicit consent) consent_source={} consent_unix_ms={} | {}",
                             chat_source.display_name,
                             relay_error,
+                            fallback_consent_source,
+                            fallback_consent_captured_at_unix_ms,
                             visibility
                         ));
                         let _ = queue_fail_tracked_job(

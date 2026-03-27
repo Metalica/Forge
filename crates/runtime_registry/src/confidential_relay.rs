@@ -203,6 +203,10 @@ pub fn default_declared_logging_policy() -> String {
     "provider_audit_redacted_export_only".to_string()
 }
 
+fn default_fallback_state() -> String {
+    "unknown".to_string()
+}
+
 impl Default for ConfidentialEndpointMetadata {
     fn default() -> Self {
         Self {
@@ -256,6 +260,8 @@ pub struct ConfidentialRelaySessionRecord {
     pub session_id: String,
     pub session_key_id: String,
     pub request_nonce: String,
+    #[serde(default)]
+    pub policy_identity: String,
     pub source_id: String,
     pub source_display_name: String,
     pub route: String,
@@ -270,6 +276,18 @@ pub struct ConfidentialRelaySessionRecord {
     pub cpu_confidential: bool,
     pub gpu_confidential: bool,
     pub encryption_mode: RelayEncryptionMode,
+    #[serde(default = "default_declared_logging_policy")]
+    pub declared_logging_policy: String,
+    #[serde(default)]
+    pub fallback_consent_required: bool,
+    #[serde(default)]
+    pub fallback_consent_granted: bool,
+    #[serde(default)]
+    pub fallback_consent_source: String,
+    #[serde(default)]
+    pub fallback_consent_captured_at_unix_ms: Option<u64>,
+    #[serde(default = "default_fallback_state")]
+    pub fallback_state: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -717,6 +735,89 @@ fn clip_text(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect::<String>() + "..."
 }
 
+fn relay_mode_identity(mode: ConfidentialRelayMode) -> &'static str {
+    match mode {
+        ConfidentialRelayMode::Disabled => "disabled",
+        ConfidentialRelayMode::Enabled => "enabled",
+        ConfidentialRelayMode::Required => "required",
+    }
+}
+
+fn relay_encryption_identity(mode: RelayEncryptionMode) -> &'static str {
+    match mode {
+        RelayEncryptionMode::TlsHttps => "tls_https",
+        RelayEncryptionMode::MtlsTunnel => "mtls_tunnel",
+        RelayEncryptionMode::EnclaveStreamV1 => "enclave_stream_v1",
+    }
+}
+
+fn relay_attestation_backend_identity(backend: AttestationVerifierBackend) -> &'static str {
+    match backend {
+        AttestationVerifierBackend::HttpJsonV1 => "http_json_v1",
+    }
+}
+
+fn fnv1a64_hex(input: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in input.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("fnv1a64:{hash:016x}")
+}
+
+pub fn build_confidential_policy_identity(
+    source_id: &str,
+    endpoint: &ConfidentialEndpointMetadata,
+    policy: &ConfidentialRelayPolicy,
+) -> String {
+    let mut measurement_prefixes = endpoint
+        .expected_measurement_prefixes
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    measurement_prefixes.sort();
+    measurement_prefixes.dedup();
+    let measurement_identity = if measurement_prefixes.is_empty() {
+        "any".to_string()
+    } else {
+        measurement_prefixes.join("|")
+    };
+    let provider_identity = endpoint
+        .expected_attestation_provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("any");
+    let verifier_api_key_env = endpoint
+        .attestation_verifier
+        .api_key_env_var
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("none");
+    let canonical = format!(
+        "source={};target_prefix={};provider={};measurements={};verifier_backend={};verifier_endpoint={};verifier_timeout_ms={};verifier_api_key_env={};encryption={};logging_policy={};policy_mode={};policy_req_cpu={};policy_req_gpu={};policy_max_age_ms={}",
+        source_id.trim(),
+        endpoint.expected_target_prefix.trim(),
+        provider_identity,
+        measurement_identity,
+        relay_attestation_backend_identity(endpoint.attestation_verifier.backend),
+        endpoint.attestation_verifier.endpoint.trim(),
+        endpoint.attestation_verifier.timeout_ms,
+        verifier_api_key_env,
+        relay_encryption_identity(endpoint.encryption_mode),
+        endpoint.declared_logging_policy.trim(),
+        relay_mode_identity(policy.mode),
+        policy.require_confidential_cpu,
+        policy.require_confidential_gpu,
+        policy.max_attestation_age_ms,
+    );
+    fnv1a64_hex(canonical.as_str())
+}
+
 pub fn build_confidential_session_id(source_id: &str, now_unix_ms: u64, nonce: &str) -> String {
     let normalized_source = source_id
         .chars()
@@ -777,7 +878,8 @@ mod tests {
     use super::{
         AttestationEvidence, AttestationVerifierConfig, ConfidentialEndpointMetadata,
         ConfidentialRelayMode, ConfidentialRelayPolicy, ConfidentialRelaySessionRecord,
-        ConfidentialRelaySessionStore, RelayEncryptionMode, verify_attestation,
+        ConfidentialRelaySessionStore, RelayEncryptionMode, build_confidential_policy_identity,
+        verify_attestation,
     };
     use std::{
         env, fs,
@@ -1021,6 +1123,13 @@ mod tests {
             cpu_confidential: true,
             gpu_confidential: true,
             encryption_mode: RelayEncryptionMode::TlsHttps,
+            declared_logging_policy: crate::confidential_relay::default_declared_logging_policy(),
+            policy_identity: "fnv1a64:test-policy-a".to_string(),
+            fallback_consent_required: true,
+            fallback_consent_granted: false,
+            fallback_consent_source: "tests.confidential_relay".to_string(),
+            fallback_consent_captured_at_unix_ms: Some(1_900),
+            fallback_state: "not_used".to_string(),
         });
 
         let path = env::temp_dir().join("forge_confidential_relay_store_test.json");
@@ -1068,6 +1177,13 @@ mod tests {
             cpu_confidential: true,
             gpu_confidential: true,
             encryption_mode: RelayEncryptionMode::TlsHttps,
+            declared_logging_policy: crate::confidential_relay::default_declared_logging_policy(),
+            policy_identity: "fnv1a64:test-policy-old".to_string(),
+            fallback_consent_required: true,
+            fallback_consent_granted: false,
+            fallback_consent_source: "tests.confidential_relay".to_string(),
+            fallback_consent_captured_at_unix_ms: Some(900),
+            fallback_state: "not_used".to_string(),
         });
         store.record_session(ConfidentialRelaySessionRecord {
             session_id: "relay-new".to_string(),
@@ -1087,6 +1203,13 @@ mod tests {
             cpu_confidential: true,
             gpu_confidential: true,
             encryption_mode: RelayEncryptionMode::TlsHttps,
+            declared_logging_policy: crate::confidential_relay::default_declared_logging_policy(),
+            policy_identity: "fnv1a64:test-policy-new".to_string(),
+            fallback_consent_required: true,
+            fallback_consent_granted: false,
+            fallback_consent_source: "tests.confidential_relay".to_string(),
+            fallback_consent_captured_at_unix_ms: Some(2_900),
+            fallback_state: "not_used".to_string(),
         });
 
         let pruned = store.prune_expired(2_500);
@@ -1120,6 +1243,13 @@ mod tests {
             cpu_confidential: true,
             gpu_confidential: true,
             encryption_mode: RelayEncryptionMode::TlsHttps,
+            declared_logging_policy: crate::confidential_relay::default_declared_logging_policy(),
+            policy_identity: "fnv1a64:test-policy-active".to_string(),
+            fallback_consent_required: true,
+            fallback_consent_granted: true,
+            fallback_consent_source: "tests.confidential_relay".to_string(),
+            fallback_consent_captured_at_unix_ms: Some(3_900),
+            fallback_state: "not_used".to_string(),
         });
         store.record_session(ConfidentialRelaySessionRecord {
             session_id: "relay-expired".to_string(),
@@ -1139,6 +1269,13 @@ mod tests {
             cpu_confidential: true,
             gpu_confidential: true,
             encryption_mode: RelayEncryptionMode::TlsHttps,
+            declared_logging_policy: crate::confidential_relay::default_declared_logging_policy(),
+            policy_identity: "fnv1a64:test-policy-expired".to_string(),
+            fallback_consent_required: true,
+            fallback_consent_granted: false,
+            fallback_consent_source: "tests.confidential_relay".to_string(),
+            fallback_consent_captured_at_unix_ms: Some(800),
+            fallback_state: "not_used".to_string(),
         });
 
         assert!(store.is_nonce_replay("api-openai", "nonce-replay", 6_000));
@@ -1174,6 +1311,14 @@ mod tests {
                 cpu_confidential: true,
                 gpu_confidential: true,
                 encryption_mode: RelayEncryptionMode::TlsHttps,
+                declared_logging_policy:
+                    crate::confidential_relay::default_declared_logging_policy(),
+                policy_identity: format!("fnv1a64:test-policy-{idx}"),
+                fallback_consent_required: true,
+                fallback_consent_granted: idx % 2 == 0,
+                fallback_consent_source: "tests.confidential_relay".to_string(),
+                fallback_consent_captured_at_unix_ms: Some(idx * 1_000),
+                fallback_state: "not_used".to_string(),
             });
         }
 
@@ -1190,5 +1335,99 @@ mod tests {
         assert_eq!(summary.relay_roundtrip_p95_ms, 60);
         assert_eq!(summary.total_path_avg_ms, 73);
         assert_eq!(summary.total_path_p95_ms, 115);
+    }
+
+    #[test]
+    fn policy_identity_is_stable_for_equivalent_metadata_order() {
+        let policy = enabled_policy();
+        let endpoint_a = ConfidentialEndpointMetadata {
+            enabled: true,
+            expected_target_prefix: "https://api.openai.com/v1".to_string(),
+            expected_attestation_provider: Some("azure-teechat".to_string()),
+            expected_measurement_prefixes: vec![
+                "sha256:trusted-b".to_string(),
+                "sha256:trusted-a".to_string(),
+            ],
+            attestation_verifier: AttestationVerifierConfig {
+                endpoint: "https://attest.example/verify".to_string(),
+                timeout_ms: 1_500,
+                ..AttestationVerifierConfig::default()
+            },
+            encryption_mode: RelayEncryptionMode::TlsHttps,
+            declared_logging_policy: crate::confidential_relay::default_declared_logging_policy(),
+        };
+        let endpoint_b = ConfidentialEndpointMetadata {
+            expected_measurement_prefixes: vec![
+                "sha256:trusted-a".to_string(),
+                "sha256:trusted-b".to_string(),
+            ],
+            ..endpoint_a.clone()
+        };
+
+        let identity_a = build_confidential_policy_identity("api-openai", &endpoint_a, &policy);
+        let identity_b = build_confidential_policy_identity("api-openai", &endpoint_b, &policy);
+        assert_eq!(identity_a, identity_b);
+    }
+
+    #[test]
+    fn session_store_load_legacy_records_defaults_new_identity_and_fallback_fields() {
+        let json = r#"{
+  "schema_version": 1,
+  "sessions": [
+    {
+      "session_id": "relay-legacy",
+      "session_key_id": "relay-key-legacy",
+      "request_nonce": "nonce-legacy",
+      "source_id": "api-openai",
+      "source_display_name": "OpenAI API",
+      "route": "https://api.openai.com/v1/chat/completions",
+      "transport_encrypted": true,
+      "verified_at_unix_ms": 1000,
+      "expires_at_unix_ms": 5000,
+      "attestation_verify_ms": 12,
+      "relay_roundtrip_ms": 24,
+      "total_path_ms": 36,
+      "attestation_provider": "forge-manual",
+      "measurement": "sha256:legacy",
+      "cpu_confidential": true,
+      "gpu_confidential": true,
+      "encryption_mode": "TlsHttps"
+    }
+  ]
+}"#;
+
+        let mut path = env::temp_dir();
+        path.push("forge_confidential_relay_legacy_session_schema.json");
+        let _ = fs::remove_file(&path);
+        assert!(fs::write(&path, json).is_ok());
+
+        let loaded = ConfidentialRelaySessionStore::load_from_path(&path);
+        assert!(loaded.is_ok());
+        let loaded = match loaded {
+            Ok(value) => value,
+            Err(_) => {
+                let _ = fs::remove_file(&path);
+                return;
+            }
+        };
+        let _ = fs::remove_file(&path);
+
+        let latest = loaded.latest_session();
+        assert!(latest.is_some());
+        let latest = match latest {
+            Some(value) => value,
+            None => return,
+        };
+        assert_eq!(latest.session_id, "relay-legacy");
+        assert!(latest.policy_identity.is_empty());
+        assert_eq!(
+            latest.declared_logging_policy,
+            crate::confidential_relay::default_declared_logging_policy()
+        );
+        assert!(!latest.fallback_consent_required);
+        assert!(!latest.fallback_consent_granted);
+        assert!(latest.fallback_consent_source.is_empty());
+        assert_eq!(latest.fallback_consent_captured_at_unix_ms, None);
+        assert_eq!(latest.fallback_state, "unknown");
     }
 }
