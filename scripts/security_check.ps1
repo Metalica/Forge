@@ -49,6 +49,8 @@ function Ensure-PolicyIntegrityKey {
 & "$PSScriptRoot\coredump_profile_scan.ps1" -ReportPath (Join-Path $securityArtifactRoot "coredump_profile_scan_report.json")
 & "$PSScriptRoot\telemetry_split_redaction_check.ps1"
 & "$PSScriptRoot\kek_custody_matrix_check.ps1"
+& "$PSScriptRoot\deep_linux_sandbox_profile_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "deep_linux_sandbox_profile_report.json")
+& "$PSScriptRoot\runtime_residual_cleanup_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "runtime_residual_cleanup_report.json")
 
 $policyBaselinePath = Join-Path $securityArtifactRoot "policy_integrity_baseline.json"
 $policyReportPath = Join-Path $securityArtifactRoot "policy_integrity_drift_report.json"
@@ -70,9 +72,20 @@ if (-not (Test-Path -LiteralPath $policyBaselinePath)) {
     -QuarantineMarkerPath $policyQuarantineMarkerPath `
     -SigningKeyEnv "FORGE_POLICY_INTEGRITY_KEY_B64" `
     -FailOnDrift:$false
+& "$PSScriptRoot\policy_integrity_continuous_monitor.ps1" `
+    -Mode RunOnce `
+    -BaselinePath $policyBaselinePath `
+    -ReportPath $policyReportPath `
+    -QuarantineMarkerPath $policyQuarantineMarkerPath `
+    -MonitorReportPath (Join-Path $securityArtifactRoot "policy_integrity_continuous_report.json") `
+    -SigningKeyEnv "FORGE_POLICY_INTEGRITY_KEY_B64" `
+    -FailOnDrift:$false
 
 & "$PSScriptRoot\test_runtime_secure_backup_import.ps1"
 & "$PSScriptRoot\test_policy_integrity_drift_check.ps1"
+& "$PSScriptRoot\test_policy_integrity_continuous_monitor.ps1"
+& "$PSScriptRoot\test_deep_linux_sandbox_profile_check.ps1"
+& "$PSScriptRoot\test_runtime_residual_cleanup_check.ps1"
 
 & "$PSScriptRoot\p0_acceptance_evidence_bundle.ps1"
 

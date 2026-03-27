@@ -74,6 +74,12 @@ Ensure-Report -Path (Join-Path $artifactRoot "process_dumpability_scan_report.js
 Ensure-Report -Path (Join-Path $artifactRoot "coredump_profile_scan_report.json") -Generator {
     & "$PSScriptRoot\coredump_profile_scan.ps1" -ReportPath (Join-Path $artifactRoot "coredump_profile_scan_report.json")
 }
+Ensure-Report -Path (Join-Path $artifactRoot "deep_linux_sandbox_profile_report.json") -Generator {
+    & "$PSScriptRoot\deep_linux_sandbox_profile_check.ps1" -ReportPath (Join-Path $artifactRoot "deep_linux_sandbox_profile_report.json")
+}
+Ensure-Report -Path (Join-Path $artifactRoot "runtime_residual_cleanup_report.json") -Generator {
+    & "$PSScriptRoot\runtime_residual_cleanup_check.ps1" -ReportPath (Join-Path $artifactRoot "runtime_residual_cleanup_report.json")
+}
 Ensure-Report -Path (Join-Path $artifactRoot "telemetry_split_redaction_report.json") -Generator {
     & "$PSScriptRoot\telemetry_split_redaction_check.ps1"
 }
@@ -96,6 +102,16 @@ Ensure-Report -Path $policyBaselinePath -Generator {
     -QuarantineMarkerPath $policyQuarantineMarkerPath `
     -SigningKeyEnv "FORGE_POLICY_INTEGRITY_KEY_B64" `
     -FailOnDrift:$false
+Ensure-Report -Path (Join-Path $artifactRoot "policy_integrity_continuous_report.json") -Generator {
+    & "$PSScriptRoot\policy_integrity_continuous_monitor.ps1" `
+        -Mode RunOnce `
+        -BaselinePath $policyBaselinePath `
+        -ReportPath $policyReportPath `
+        -QuarantineMarkerPath $policyQuarantineMarkerPath `
+        -MonitorReportPath (Join-Path $artifactRoot "policy_integrity_continuous_report.json") `
+        -SigningKeyEnv "FORGE_POLICY_INTEGRITY_KEY_B64" `
+        -FailOnDrift:$false
+}
 
 & cargo run -p forge_security --bin argon2id_bench_report -- --out $argon2Path --runs 4
 if ($LASTEXITCODE -ne 0) {
@@ -123,13 +139,16 @@ $artifactSpecs = @(
     @{ name = "process_cmdline_secret_scan_report"; path = (Join-Path $artifactRoot "process_cmdline_secret_scan_report.json"); requirePassed = $true },
     @{ name = "process_dumpability_scan_report"; path = (Join-Path $artifactRoot "process_dumpability_scan_report.json"); requirePassed = $true },
     @{ name = "coredump_profile_scan_report"; path = (Join-Path $artifactRoot "coredump_profile_scan_report.json"); requirePassed = $true },
+    @{ name = "deep_linux_sandbox_profile_report"; path = (Join-Path $artifactRoot "deep_linux_sandbox_profile_report.json"); requirePassed = $true },
+    @{ name = "runtime_residual_cleanup_report"; path = (Join-Path $artifactRoot "runtime_residual_cleanup_report.json"); requirePassed = $true },
     @{ name = "telemetry_split_redaction_report"; path = (Join-Path $artifactRoot "telemetry_split_redaction_report.json"); requirePassed = $true },
     @{ name = "broker_audit_events"; path = (Join-Path $artifactRoot "broker_audit_events.json"); requirePassed = $false },
     @{ name = "provider_adapter_audit_events"; path = (Join-Path $artifactRoot "provider_adapter_audit_events.json"); requirePassed = $false },
     @{ name = "kek_custody_matrix"; path = (Join-Path $artifactRoot "kek_custody_matrix.json"); requirePassed = $false },
     @{ name = "argon2id_benchmark_report"; path = $argon2Path; requirePassed = $false },
     @{ name = "nonce_uniqueness_report"; path = $noncePath; requirePassed = $true },
-    @{ name = "policy_integrity_drift_report"; path = $policyReportPath; requirePassed = $false }
+    @{ name = "policy_integrity_drift_report"; path = $policyReportPath; requirePassed = $false },
+    @{ name = "policy_integrity_continuous_report"; path = (Join-Path $artifactRoot "policy_integrity_continuous_report.json"); requirePassed = $true }
 )
 
 $artifactRows = @()

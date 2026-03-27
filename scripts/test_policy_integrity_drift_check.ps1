@@ -45,9 +45,12 @@ try {
 
     $signingEnv = "FORGE_POLICY_INTEGRITY_KEY_B64"
     $adminEnv = "FORGE_ADMIN_REAUTH_CODE"
+    $dualEnv = "FORGE_ADMIN_DUAL_CONTROL_CODE"
     $adminCode = "forge-admin-selftest-code"
+    $dualCode = "forge-dual-selftest-code"
     [Environment]::SetEnvironmentVariable($signingEnv, (New-RandomBase64Key), "Process")
     [Environment]::SetEnvironmentVariable($adminEnv, $adminCode, "Process")
+    [Environment]::SetEnvironmentVariable($dualEnv, $dualCode, "Process")
 
     & "$PSScriptRoot\policy_integrity_drift_check.ps1" `
         -Mode Baseline `
@@ -90,6 +93,9 @@ try {
             -SigningKeyEnv $signingEnv `
             -AdminReauthEnv $adminEnv `
             -AdminReauthCode $adminCode `
+            -DualControlEnv $dualEnv `
+            -DualControlCode $dualCode `
+            -ChangeReason "Rotate policy baseline after approved trust-state update" `
             -TypedConfirmation "wrong confirmation"
     }
     catch {
@@ -109,6 +115,9 @@ try {
         -SigningKeyEnv $signingEnv `
         -AdminReauthEnv $adminEnv `
         -AdminReauthCode $adminCode `
+        -DualControlEnv $dualEnv `
+        -DualControlCode $dualCode `
+        -ChangeReason "Rotate policy baseline after approved trust-state update" `
         -TypedConfirmation "I UNDERSTAND FORGE POLICY CHANGE"
 
     & "$PSScriptRoot\policy_integrity_drift_check.ps1" `
@@ -127,5 +136,6 @@ try {
 finally {
     [Environment]::SetEnvironmentVariable("FORGE_POLICY_INTEGRITY_KEY_B64", $null, "Process")
     [Environment]::SetEnvironmentVariable("FORGE_ADMIN_REAUTH_CODE", $null, "Process")
+    [Environment]::SetEnvironmentVariable("FORGE_ADMIN_DUAL_CONTROL_CODE", $null, "Process")
     Remove-Item -Path $testRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

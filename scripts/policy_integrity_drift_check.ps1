@@ -18,7 +18,11 @@ param(
     [string]$TypedConfirmation = "",
     [string]$RequiredTypedConfirmation = "I UNDERSTAND FORGE POLICY CHANGE",
     [string]$AdminReauthCode = "",
-    [string]$AdminReauthEnv = "FORGE_ADMIN_REAUTH_CODE"
+    [string]$AdminReauthEnv = "FORGE_ADMIN_REAUTH_CODE",
+    [string]$DualControlCode = "",
+    [string]$DualControlEnv = "FORGE_ADMIN_DUAL_CONTROL_CODE",
+    [string]$ChangeReason = "",
+    [int]$MinChangeReasonLength = 12
 )
 
 $ErrorActionPreference = "Stop"
@@ -137,6 +141,75 @@ function Resolve-WatchedEntries {
     }
 }
 
+function Build-EntryMap {
+    param([Parameter(Mandatory = $true)][object[]]$Entries)
+    $map = @{}
+    foreach ($entry in $Entries) {
+        $path = [string]$entry.path
+        $map[$path] = $entry
+    }
+    return $map
+}
+
+function Build-TrustStateDiff {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$PreviousEntries,
+        [Parameter(Mandatory = $true)][object[]]$NextEntries
+    )
+    $previousMap = Build-EntryMap -Entries $PreviousEntries
+    $nextMap = Build-EntryMap -Entries $NextEntries
+    $allPaths = @($previousMap.Keys + $nextMap.Keys | Sort-Object -Unique)
+    $changes = @()
+    foreach ($path in $allPaths) {
+        $previous = $previousMap[$path]
+        $next = $nextMap[$path]
+        if ($null -eq $previous -and $null -ne $next) {
+            $changes += [PSCustomObject]@{
+                path = $path
+                change = "added"
+                previous_present = $false
+                next_present = [bool]$next.present
+                previous_sha256 = ""
+                next_sha256 = [string]$next.sha256
+            }
+            continue
+        }
+        if ($null -ne $previous -and $null -eq $next) {
+            $changes += [PSCustomObject]@{
+                path = $path
+                change = "removed"
+                previous_present = [bool]$previous.present
+                next_present = $false
+                previous_sha256 = [string]$previous.sha256
+                next_sha256 = ""
+            }
+            continue
+        }
+        if ([bool]$previous.present -ne [bool]$next.present) {
+            $changes += [PSCustomObject]@{
+                path = $path
+                change = "presence_changed"
+                previous_present = [bool]$previous.present
+                next_present = [bool]$next.present
+                previous_sha256 = [string]$previous.sha256
+                next_sha256 = [string]$next.sha256
+            }
+            continue
+        }
+        if ([string]$previous.sha256 -ne [string]$next.sha256) {
+            $changes += [PSCustomObject]@{
+                path = $path
+                change = "sha256_changed"
+                previous_present = [bool]$previous.present
+                next_present = [bool]$next.present
+                previous_sha256 = [string]$previous.sha256
+                next_sha256 = [string]$next.sha256
+            }
+        }
+    }
+    return $changes
+}
+
 function Build-BaselineCanonicalJson {
     param(
         [Parameter(Mandatory = $true)][string]$WorkspaceRoot,
@@ -184,9 +257,13 @@ $workspaceRoot = Resolve-WorkspaceRoot
 $signingKey = Get-SigningKeyBytes -EnvName $SigningKeyEnv
 
 if ($Mode -eq "Baseline" -or $Mode -eq "ApproveBaselineUpdate") {
+    $previousData = $null
     if ($Mode -eq "ApproveBaselineUpdate") {
         if ($TypedConfirmation -ne $RequiredTypedConfirmation) {
             throw "Typed confirmation mismatch. Expected: '$RequiredTypedConfirmation'"
+        }
+        if ([string]::IsNullOrWhiteSpace($ChangeReason) -or $ChangeReason.Trim().Length -lt $MinChangeReasonLength) {
+            throw "ChangeReason is required and must be at least $MinChangeReasonLength characters for policy approvals."
         }
 
         $expectedAdminCode = [Environment]::GetEnvironmentVariable($AdminReauthEnv)
@@ -195,6 +272,16 @@ if ($Mode -eq "Baseline" -or $Mode -eq "ApproveBaselineUpdate") {
         }
         if ([string]::IsNullOrWhiteSpace($AdminReauthCode) -or $AdminReauthCode -ne $expectedAdminCode) {
             throw "Admin re-auth code verification failed."
+        }
+        $expectedDualControlCode = [Environment]::GetEnvironmentVariable($DualControlEnv)
+        if ([string]::IsNullOrWhiteSpace($expectedDualControlCode)) {
+            throw "Dual-control env '$DualControlEnv' is not set."
+        }
+        if ([string]::IsNullOrWhiteSpace($DualControlCode) -or $DualControlCode -ne $expectedDualControlCode) {
+            throw "Dual-control verification failed."
+        }
+        if ($DualControlCode -eq $AdminReauthCode) {
+            throw "Dual-control code must be distinct from the primary admin re-auth code."
         }
 
         if (Test-Path -LiteralPath $BaselinePath) {
@@ -218,6 +305,14 @@ if ($Mode -eq "Baseline" -or $Mode -eq "ApproveBaselineUpdate") {
     }
     Write-JsonFile -Path $BaselinePath -Payload $bundle
 
+    $baselineData = $canonical | ConvertFrom-Json
+    $trustStateDiff = @()
+    if ($Mode -eq "ApproveBaselineUpdate" -and $null -ne $previousData) {
+        $trustStateDiff = Build-TrustStateDiff `
+            -PreviousEntries @($previousData.entries) `
+            -NextEntries @($baselineData.entries)
+    }
+
     $report = [ordered]@{
         schema_version = 1
         mode = $Mode
@@ -225,7 +320,16 @@ if ($Mode -eq "Baseline" -or $Mode -eq "ApproveBaselineUpdate") {
         baseline_path = $BaselinePath
         quarantine_required = $false
         policy_version = $PolicyVersion
-        admin_reauth = if ($Mode -eq "ApproveBaselineUpdate") { "verified" } else { "not-required" }
+        admin_reauth = if ($Mode -eq "ApproveBaselineUpdate") { "verified-dual-control" } else { "not-required" }
+        dual_control = if ($Mode -eq "ApproveBaselineUpdate") { "verified" } else { "not-required" }
+        change_reason = if ($Mode -eq "ApproveBaselineUpdate") { $ChangeReason.Trim() } else { "" }
+        trust_state_diff_count = $trustStateDiff.Count
+        trust_state_diff = $trustStateDiff
+        approval_evidence = if ($Mode -eq "ApproveBaselineUpdate") {
+            "Allowed because typed confirmation, primary admin re-auth, and dual-control code verification all succeeded; trust-state diff captured for operator review."
+        } else {
+            ""
+        }
     }
     Write-JsonFile -Path $ReportPath -Payload $report
     Write-Host "policy integrity baseline written: $BaselinePath"
@@ -249,46 +353,22 @@ $signatureValid = Compare-ByteArraysFixedTime -Left $expectedSig -Right $actualS
 $baselineData = $baselineCanonical | ConvertFrom-Json
 $watched = @($baselineData.watched_paths)
 $current = Resolve-WatchedEntries -WorkspaceRoot $workspaceRoot -RelativePaths $watched
-$currentMap = @{}
-foreach ($entry in $current.entries) {
-    $currentMap[[string]$entry.path] = $entry
-}
-
+$trustStateDiff = Build-TrustStateDiff -PreviousEntries @($baselineData.entries) -NextEntries @($current.entries)
 $drifts = @()
-foreach ($expected in $baselineData.entries) {
-    $path = [string]$expected.path
-    $actual = $currentMap[$path]
-    if ($null -eq $actual) {
-        $drifts += [PSCustomObject]@{
-            path = $path
-            reason = "missing from current scan"
-            expected_present = [bool]$expected.present
-            actual_present = $false
-            expected_sha256 = [string]$expected.sha256
-            actual_sha256 = ""
-        }
-        continue
+foreach ($change in $trustStateDiff) {
+    $reason = switch ([string]$change.change) {
+        "added" { "missing from baseline" }
+        "removed" { "missing from current scan" }
+        "presence_changed" { "presence mismatch" }
+        default { "sha256 drift" }
     }
-    if ([bool]$expected.present -ne [bool]$actual.present) {
-        $drifts += [PSCustomObject]@{
-            path = $path
-            reason = "presence mismatch"
-            expected_present = [bool]$expected.present
-            actual_present = [bool]$actual.present
-            expected_sha256 = [string]$expected.sha256
-            actual_sha256 = [string]$actual.sha256
-        }
-        continue
-    }
-    if ([bool]$expected.present -and [string]$expected.sha256 -ne [string]$actual.sha256) {
-        $drifts += [PSCustomObject]@{
-            path = $path
-            reason = "sha256 drift"
-            expected_present = $true
-            actual_present = $true
-            expected_sha256 = [string]$expected.sha256
-            actual_sha256 = [string]$actual.sha256
-        }
+    $drifts += [PSCustomObject]@{
+        path = [string]$change.path
+        reason = $reason
+        expected_present = [bool]$change.previous_present
+        actual_present = [bool]$change.next_present
+        expected_sha256 = [string]$change.previous_sha256
+        actual_sha256 = [string]$change.next_sha256
     }
 }
 

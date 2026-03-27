@@ -49,33 +49,38 @@ pub fn enforce_process_dumpability_controls() -> Result<(), ProcessHardeningErro
         }
 
         if env_flag_enabled("FORGE_REQUIRE_LINUX_SECCOMP_PROFILE") {
-            let seccomp_mode = read_proc_status_numeric_field("Seccomp")?;
-            if seccomp_mode.unwrap_or(0) == 0 {
-                return Err(ProcessHardeningError {
-                    message: "strict sandbox requires seccomp profile but /proc/self/status reports Seccomp=0".to_string(),
-                });
-            }
-        }
-
-        if env_flag_enabled("FORGE_REQUIRE_LINUX_LANDLOCK") {
-            let landlock_path = Path::new("/sys/kernel/security/landlock");
-            if !landlock_path.exists() {
-                return Err(ProcessHardeningError {
-                    message: "strict sandbox requires landlock but kernel landlock interface is unavailable".to_string(),
-                });
-            }
+            let status = std::fs::read_to_string("/proc/self/status").map_err(|error| {
+                ProcessHardeningError {
+                    message: format!(
+                        "failed to read /proc/self/status for strict sandbox checks: {error}"
+                    ),
+                }
+            })?;
+            let landlock_available = Path::new("/sys/kernel/security/landlock").exists();
+            ensure_optional_linux_sandbox_requirements(
+                status.as_str(),
+                true,
+                env_flag_enabled("FORGE_REQUIRE_LINUX_LANDLOCK"),
+                landlock_available,
+            )?;
+        } else if env_flag_enabled("FORGE_REQUIRE_LINUX_LANDLOCK") {
+            let status = std::fs::read_to_string("/proc/self/status").map_err(|error| {
+                ProcessHardeningError {
+                    message: format!(
+                        "failed to read /proc/self/status for strict sandbox checks: {error}"
+                    ),
+                }
+            })?;
+            let landlock_available = Path::new("/sys/kernel/security/landlock").exists();
+            ensure_optional_linux_sandbox_requirements(
+                status.as_str(),
+                false,
+                true,
+                landlock_available,
+            )?;
         }
     }
     Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn read_proc_status_numeric_field(field: &str) -> Result<Option<u32>, ProcessHardeningError> {
-    let status =
-        std::fs::read_to_string("/proc/self/status").map_err(|error| ProcessHardeningError {
-            message: format!("failed to read /proc/self/status for {field}: {error}"),
-        })?;
-    Ok(parse_proc_status_numeric_field(status.as_str(), field))
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -106,9 +111,39 @@ fn parse_env_flag(raw: &str) -> bool {
     matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn ensure_optional_linux_sandbox_requirements(
+    proc_status: &str,
+    require_seccomp: bool,
+    require_landlock: bool,
+    landlock_available: bool,
+) -> Result<(), ProcessHardeningError> {
+    if require_seccomp {
+        let seccomp_mode = parse_proc_status_numeric_field(proc_status, "Seccomp").unwrap_or(0);
+        if seccomp_mode == 0 {
+            return Err(ProcessHardeningError {
+                message: "strict sandbox requires seccomp profile but /proc/self/status reports Seccomp=0".to_string(),
+            });
+        }
+    }
+
+    if require_landlock && !landlock_available {
+        return Err(ProcessHardeningError {
+            message:
+                "strict sandbox requires landlock but kernel landlock interface is unavailable"
+                    .to_string(),
+        });
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{env_flag_enabled, parse_env_flag, parse_proc_status_numeric_field};
+    use super::{
+        ensure_optional_linux_sandbox_requirements, env_flag_enabled, parse_env_flag,
+        parse_proc_status_numeric_field,
+    };
 
     #[test]
     fn parse_proc_status_numeric_field_extracts_value() {
@@ -140,5 +175,26 @@ mod tests {
     #[test]
     fn env_flag_enabled_returns_false_when_missing() {
         assert!(!env_flag_enabled("FORGE_TEST_TRUTHY_FLAG"));
+    }
+
+    #[test]
+    fn strict_sandbox_requirements_fail_when_seccomp_is_required_but_disabled() {
+        let status = "Name:\tforge\nSeccomp:\t0\nNoNewPrivs:\t1\n";
+        let result = ensure_optional_linux_sandbox_requirements(status, true, false, true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn strict_sandbox_requirements_pass_when_seccomp_filter_is_active() {
+        let status = "Name:\tforge\nSeccomp:\t2\nNoNewPrivs:\t1\n";
+        let result = ensure_optional_linux_sandbox_requirements(status, true, false, true);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn strict_sandbox_requirements_fail_when_landlock_is_required_but_unavailable() {
+        let status = "Name:\tforge\nSeccomp:\t2\nNoNewPrivs:\t1\n";
+        let result = ensure_optional_linux_sandbox_requirements(status, false, true, false);
+        assert!(result.is_err());
     }
 }
