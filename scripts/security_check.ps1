@@ -12,11 +12,68 @@ if (-not (Test-Path $securityArtifactRoot)) {
     New-Item -ItemType Directory -Path $securityArtifactRoot -Force | Out-Null
 }
 
+function Ensure-PolicyIntegrityKey {
+    param(
+        [Parameter(Mandatory = $true)][string]$KeyPath,
+        [Parameter(Mandatory = $true)][string]$EnvName
+    )
+
+    $existing = [Environment]::GetEnvironmentVariable($EnvName, "Process")
+    if (-not [string]::IsNullOrWhiteSpace($existing)) {
+        return
+    }
+
+    if (Test-Path -LiteralPath $KeyPath) {
+        $persisted = (Get-Content -LiteralPath $KeyPath -Raw).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($persisted)) {
+            [Environment]::SetEnvironmentVariable($EnvName, $persisted, "Process")
+            return
+        }
+    }
+
+    $bytes = New-Object byte[] 32
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $rng.GetBytes($bytes)
+    }
+    finally {
+        $rng.Dispose()
+    }
+    $generated = [Convert]::ToBase64String($bytes)
+    Set-Content -LiteralPath $KeyPath -Value $generated -Encoding UTF8
+    [Environment]::SetEnvironmentVariable($EnvName, $generated, "Process")
+}
+
 & "$PSScriptRoot\process_cmdline_secret_scan.ps1" -ReportPath (Join-Path $securityArtifactRoot "process_cmdline_secret_scan_report.json")
 & "$PSScriptRoot\process_dumpability_scan.ps1" -ReportPath (Join-Path $securityArtifactRoot "process_dumpability_scan_report.json")
 & "$PSScriptRoot\coredump_profile_scan.ps1" -ReportPath (Join-Path $securityArtifactRoot "coredump_profile_scan_report.json")
 & "$PSScriptRoot\telemetry_split_redaction_check.ps1"
 & "$PSScriptRoot\kek_custody_matrix_check.ps1"
+
+$policyBaselinePath = Join-Path $securityArtifactRoot "policy_integrity_baseline.json"
+$policyReportPath = Join-Path $securityArtifactRoot "policy_integrity_drift_report.json"
+$policyQuarantineMarkerPath = Join-Path $securityArtifactRoot "QUARANTINE_MODE.flag"
+$policyIntegrityKeyPath = Join-Path $securityArtifactRoot "policy_integrity_key.b64"
+Ensure-PolicyIntegrityKey -KeyPath $policyIntegrityKeyPath -EnvName "FORGE_POLICY_INTEGRITY_KEY_B64"
+if (-not (Test-Path -LiteralPath $policyBaselinePath)) {
+    & "$PSScriptRoot\policy_integrity_drift_check.ps1" `
+        -Mode Baseline `
+        -BaselinePath $policyBaselinePath `
+        -ReportPath $policyReportPath `
+        -QuarantineMarkerPath $policyQuarantineMarkerPath `
+        -SigningKeyEnv "FORGE_POLICY_INTEGRITY_KEY_B64"
+}
+& "$PSScriptRoot\policy_integrity_drift_check.ps1" `
+    -Mode Verify `
+    -BaselinePath $policyBaselinePath `
+    -ReportPath $policyReportPath `
+    -QuarantineMarkerPath $policyQuarantineMarkerPath `
+    -SigningKeyEnv "FORGE_POLICY_INTEGRITY_KEY_B64" `
+    -FailOnDrift:$false
+
+& "$PSScriptRoot\test_runtime_secure_backup_import.ps1"
+& "$PSScriptRoot\test_policy_integrity_drift_check.ps1"
+
 & "$PSScriptRoot\p0_acceptance_evidence_bundle.ps1"
 
 function Invoke-Checked {

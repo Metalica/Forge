@@ -10,6 +10,10 @@ $artifactRoot = Join-Path $workspaceRoot ".tmp\security"
 $bundlePath = Join-Path $artifactRoot "p0_acceptance_evidence_bundle.json"
 $argon2Path = Join-Path $artifactRoot "argon2id_benchmark_report.json"
 $noncePath = Join-Path $artifactRoot "nonce_uniqueness_report.json"
+$policyBaselinePath = Join-Path $artifactRoot "policy_integrity_baseline.json"
+$policyReportPath = Join-Path $artifactRoot "policy_integrity_drift_report.json"
+$policyQuarantineMarkerPath = Join-Path $artifactRoot "QUARANTINE_MODE.flag"
+$policyIntegrityKeyPath = Join-Path $artifactRoot "policy_integrity_key.b64"
 
 if (-not (Test-Path $artifactRoot)) {
     New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
@@ -24,6 +28,35 @@ function Ensure-Report {
         return
     }
     & $Generator
+}
+
+function Ensure-PolicyIntegrityKey {
+    param(
+        [Parameter(Mandatory = $true)][string]$KeyPath,
+        [Parameter(Mandatory = $true)][string]$EnvName
+    )
+    $existing = [Environment]::GetEnvironmentVariable($EnvName, "Process")
+    if (-not [string]::IsNullOrWhiteSpace($existing)) {
+        return
+    }
+    if (Test-Path -LiteralPath $KeyPath) {
+        $persisted = (Get-Content -LiteralPath $KeyPath -Raw).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($persisted)) {
+            [Environment]::SetEnvironmentVariable($EnvName, $persisted, "Process")
+            return
+        }
+    }
+    $bytes = New-Object byte[] 32
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $rng.GetBytes($bytes)
+    }
+    finally {
+        $rng.Dispose()
+    }
+    $generated = [Convert]::ToBase64String($bytes)
+    Set-Content -LiteralPath $KeyPath -Value $generated -Encoding UTF8
+    [Environment]::SetEnvironmentVariable($EnvName, $generated, "Process")
 }
 
 Ensure-Report -Path (Join-Path $artifactRoot "secret_leak_report.json") -Generator {
@@ -47,6 +80,22 @@ Ensure-Report -Path (Join-Path $artifactRoot "telemetry_split_redaction_report.j
 Ensure-Report -Path (Join-Path $artifactRoot "kek_custody_matrix.json") -Generator {
     & "$PSScriptRoot\kek_custody_matrix_check.ps1"
 }
+Ensure-PolicyIntegrityKey -KeyPath $policyIntegrityKeyPath -EnvName "FORGE_POLICY_INTEGRITY_KEY_B64"
+Ensure-Report -Path $policyBaselinePath -Generator {
+    & "$PSScriptRoot\policy_integrity_drift_check.ps1" `
+        -Mode Baseline `
+        -BaselinePath $policyBaselinePath `
+        -ReportPath $policyReportPath `
+        -QuarantineMarkerPath $policyQuarantineMarkerPath `
+        -SigningKeyEnv "FORGE_POLICY_INTEGRITY_KEY_B64"
+}
+& "$PSScriptRoot\policy_integrity_drift_check.ps1" `
+    -Mode Verify `
+    -BaselinePath $policyBaselinePath `
+    -ReportPath $policyReportPath `
+    -QuarantineMarkerPath $policyQuarantineMarkerPath `
+    -SigningKeyEnv "FORGE_POLICY_INTEGRITY_KEY_B64" `
+    -FailOnDrift:$false
 
 & cargo run -p forge_security --bin argon2id_bench_report -- --out $argon2Path --runs 4
 if ($LASTEXITCODE -ne 0) {
@@ -79,7 +128,8 @@ $artifactSpecs = @(
     @{ name = "provider_adapter_audit_events"; path = (Join-Path $artifactRoot "provider_adapter_audit_events.json"); requirePassed = $false },
     @{ name = "kek_custody_matrix"; path = (Join-Path $artifactRoot "kek_custody_matrix.json"); requirePassed = $false },
     @{ name = "argon2id_benchmark_report"; path = $argon2Path; requirePassed = $false },
-    @{ name = "nonce_uniqueness_report"; path = $noncePath; requirePassed = $true }
+    @{ name = "nonce_uniqueness_report"; path = $noncePath; requirePassed = $true },
+    @{ name = "policy_integrity_drift_report"; path = $policyReportPath; requirePassed = $false }
 )
 
 $artifactRows = @()
@@ -112,6 +162,20 @@ foreach ($spec in $artifactSpecs) {
             if ($passed -and $null -eq $parsed.schema_version) {
                 $passed = $false
                 $detail = "artifact missing schema_version"
+            }
+            if ($passed -and $spec.name -eq "policy_integrity_drift_report") {
+                if ($null -eq $parsed.signature_valid) {
+                    $passed = $false
+                    $detail = "policy integrity report missing signature_valid"
+                }
+                elseif (-not [bool]$parsed.signature_valid) {
+                    $passed = $false
+                    $detail = "policy integrity signature validation failed"
+                }
+                elseif ([bool]$parsed.quarantine_required) {
+                    $passed = $false
+                    $detail = "policy integrity drift check requires quarantine"
+                }
             }
         }
         catch {
