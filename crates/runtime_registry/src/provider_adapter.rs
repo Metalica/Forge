@@ -1,8 +1,9 @@
 use crate::confidential_relay::{
     AttestationEvidence, ConfidentialRelayMode, ConfidentialRelayPolicy,
     ConfidentialRelaySessionRecord, ConfidentialRelaySessionStore, RelayEncryptionMode,
-    allow_insecure_localhost_http_endpoint, build_confidential_session_id,
-    build_confidential_policy_identity, build_confidential_session_key_id, verify_attestation,
+    allow_insecure_localhost_http_endpoint, build_confidential_policy_identity,
+    build_confidential_release_binding, build_confidential_session_id,
+    build_confidential_session_key_id, verify_attestation,
 };
 use crate::local_api_hardening::guard_and_audit_provider_route;
 use crate::openjarvis_bridge::{
@@ -225,6 +226,7 @@ pub struct ConfidentialChatTaskResponse {
     pub fallback_consent_source: Option<String>,
     pub fallback_consent_captured_at_unix_ms: Option<u64>,
     pub fallback_state: String,
+    pub release_binding: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -394,6 +396,15 @@ pub fn run_confidential_chat_task_with_source(
     let request_nonce = request.attestation.nonce.trim().to_string();
     let transport_encrypted = true;
     let policy_identity = build_confidential_policy_identity(&source.id, endpoint, &request.policy);
+    let release_binding = build_confidential_release_binding(
+        &source.id,
+        &source.target,
+        &session_id,
+        &request_nonce,
+        &policy_identity,
+        &verified,
+        endpoint,
+    );
     let declared_logging_policy = if endpoint.declared_logging_policy.trim().is_empty() {
         crate::confidential_relay::default_declared_logging_policy()
     } else {
@@ -440,6 +451,7 @@ pub fn run_confidential_chat_task_with_source(
         fallback_consent_source: fallback_consent_source.clone(),
         fallback_consent_captured_at_unix_ms,
         fallback_state: "not_used".to_string(),
+        release_binding: release_binding.clone(),
     };
     session_store.record_session(record);
 
@@ -474,6 +486,7 @@ pub fn run_confidential_chat_task_with_source(
         },
         fallback_consent_captured_at_unix_ms,
         fallback_state: "not_used".to_string(),
+        release_binding,
     })
 }
 
@@ -1192,9 +1205,8 @@ mod tests {
     use super::{
         ChatTaskRequest, CodexSpecialistTaskRequest, ConfidentialChatTaskRequest,
         ConfidentialFallbackConsent, RoleTaskRequest, derive_openai_chat_completions_endpoint,
-        run_chat_task_with_source,
-        run_codex_specialist_task, run_confidential_chat_task_with_source,
-        run_role_task_with_source,
+        run_chat_task_with_source, run_codex_specialist_task,
+        run_confidential_chat_task_with_source, run_role_task_with_source,
     };
     use crate::confidential_relay::{
         AttestationEvidence, AttestationVerifierConfig, ConfidentialEndpointMetadata,
@@ -1738,6 +1750,7 @@ mod tests {
             fallback_consent_source: "tests.provider_adapter".to_string(),
             fallback_consent_captured_at_unix_ms: Some(now.saturating_sub(2_000)),
             fallback_state: "not_used".to_string(),
+            release_binding: "sha256:test-release-binding".to_string(),
         });
         let request = ConfidentialChatTaskRequest {
             prompt: "hello".to_string(),

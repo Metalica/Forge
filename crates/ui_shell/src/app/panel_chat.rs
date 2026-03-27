@@ -68,6 +68,43 @@ fn format_confidential_visibility_status(
     )
 }
 
+fn format_confidential_banner(confidential_status: &str) -> String {
+    let status = confidential_status.trim();
+    if status.is_empty() || status == "confidential relay idle" {
+        return "idle (no confidential relay result yet)".to_string();
+    }
+    if status.contains("fallback_state=remote_consented_failed") {
+        return "WARNING: confidential relay failed and remote fallback failed after one-time consent"
+            .to_string();
+    }
+    if status.contains("fallback_state=remote_consented") {
+        return "WARNING: confidential relay failed and remote fallback executed with one-time consent"
+            .to_string();
+    }
+    if status.contains("fallback_state=blocked(no explicit consent)") {
+        return "NOTICE: confidential relay failed and fallback stayed blocked without explicit consent"
+            .to_string();
+    }
+    if status.contains("relay_status=verified") || status.starts_with("verified session=") {
+        return "OK: attested confidential relay verified; no fallback used".to_string();
+    }
+    if status.contains("confidential relay blocked") {
+        return "NOTICE: confidential relay request was blocked before attested execution"
+            .to_string();
+    }
+    if status.contains("confidential relay failed") {
+        return "WARNING: confidential relay failed".to_string();
+    }
+    "NOTICE: confidential relay status updated".to_string()
+}
+
+fn confidential_banner_is_warning(confidential_status: &str) -> bool {
+    confidential_status.contains("fallback_state=remote_consented")
+        || confidential_status.contains("fallback_state=remote_consented_failed")
+        || (confidential_status.contains("confidential relay failed")
+            && !confidential_status.contains("fallback_state=blocked(no explicit consent)"))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn chat_panel(
     runtime_version: RwSignal<String>,
@@ -470,7 +507,11 @@ fn chat_panel(
             let now = unix_time_ms_now();
             let nonce = format!("chat-{now}-{max_tokens}");
             let fallback_consent_captured_at_unix_ms = now;
-            let fallback_consent_source = "ui.chat.confidential_fallback_toggle".to_string();
+            let fallback_consent_source = if allow_remote_fallback {
+                "ui.chat.confidential_fallback_toggle.one_shot".to_string()
+            } else {
+                "ui.chat.confidential_fallback_toggle".to_string()
+            };
             let attestation = AttestationEvidence {
                 provider: "forge-manual".to_string(),
                 measurement: measurement.trim().to_string(),
@@ -569,11 +610,12 @@ fn chat_panel(
                             .unwrap_or_else(|| "n/a".to_string())
                     ));
                     chat_confidential_status.set(format!(
-                        "verified session={} key={} nonce={} policy_id={} provider={} measurement={} expires={} enc={:?} transport_encrypted={} mode={:?} req_cpu={} req_gpu={} verify_ms={} relay_ms={} total_ms={} fallback_required={} fallback_consent={} fallback_consent_source={} fallback_consent_unix_ms={} fallback_state={} {} | {}",
+                        "verified session={} key={} nonce={} policy_id={} release_binding={} provider={} measurement={} expires={} enc={:?} transport_encrypted={} mode={:?} req_cpu={} req_gpu={} verify_ms={} relay_ms={} total_ms={} fallback_required={} fallback_consent={} fallback_consent_source={} fallback_consent_unix_ms={} fallback_state={} {} | {}",
                         response.session_id,
                         clip_text(&response.session_key_id, 32),
                         clip_text(&response.request_nonce, 32),
                         clip_text(&response.policy_identity, 40),
+                        clip_text(&response.release_binding, 40),
                         response.attestation_provider,
                         clip_text(&response.measurement, 48),
                         response.expires_at_unix_ms,
@@ -612,6 +654,18 @@ fn chat_panel(
                 Err(error) => {
                     let relay_error = clip_text(&error, 180);
                     if allow_remote_fallback {
+                        // Consent is one-shot: fallback use consumes approval and requires re-approval.
+                        chat_confidential_allow_remote_fallback.set(false);
+                        persist_chat_confidential_state_with_notice(
+                            chat_confidential_measurement,
+                            chat_confidential_policy_mode,
+                            chat_confidential_max_attestation_age_ms,
+                            chat_confidential_profile_window,
+                            chat_confidential_require_cpu,
+                            chat_confidential_require_gpu,
+                            chat_confidential_allow_remote_fallback,
+                            chat_confidential_status,
+                        );
                         let fallback_request = ChatTaskRequest::new(prompt.clone(), max_tokens);
                         let fallback_request = match fallback_request {
                             Ok(value) => value,
@@ -696,7 +750,7 @@ fn chat_panel(
                                     fallback_ms
                                 ));
                                 chat_confidential_status.set(format!(
-                                    "confidential relay failed via {}: {} | fallback_state=remote_consented route={} remote_ms={} consent_source={} consent_unix_ms={} | {}",
+                                    "confidential relay failed via {}: {} | fallback_state=remote_consented route={} remote_ms={} consent_source={} consent_unix_ms={} consent_consumed=true | {}",
                                     chat_source.display_name,
                                     relay_error,
                                     fallback_response.route,
@@ -727,7 +781,7 @@ fn chat_panel(
                                     declared_logging_policy.as_str(),
                                 );
                                 chat_confidential_status.set(format!(
-                                    "confidential relay failed via {}: {} | fallback_state=remote_consented_failed reason={} consent_source={} consent_unix_ms={} | {}",
+                                    "confidential relay failed via {}: {} | fallback_state=remote_consented_failed reason={} consent_source={} consent_unix_ms={} consent_consumed=true | {}",
                                     chat_source.display_name,
                                     relay_error,
                                     clip_text(&fallback_error, 160),
@@ -1203,6 +1257,20 @@ fn chat_panel(
         .style(|s| s.gap(8.0)),
         label(move || format!("Status: {}", chat_status.get()))
             .style(|s| s.color(theme::text_secondary())),
+        label(move || {
+            format!(
+                "Confidential Banner: {}",
+                format_confidential_banner(chat_confidential_status.get().as_str())
+            )
+        })
+        .style(move |s| {
+            let color = if confidential_banner_is_warning(chat_confidential_status.get().as_str()) {
+                theme::warning()
+            } else {
+                theme::success()
+            };
+            s.color(color)
+        }),
         label(move || format!("Confidential: {}", chat_confidential_status.get()))
             .style(|s| s.color(theme::text_secondary())),
         scroll(label(move || chat_output.get())).style(|s| {

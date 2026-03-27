@@ -1,3 +1,69 @@
+fn model_source_runtime_class_label(kind: SourceKind) -> &'static str {
+    match kind {
+        SourceKind::LocalModel => "local_model_runtime",
+        SourceKind::ApiModel => "remote_api_model",
+        SourceKind::SidecarBridge => "remote_sidecar_bridge",
+    }
+}
+
+fn model_source_location_label(source: &SourceEntry) -> String {
+    let target = source.target.trim();
+    if matches!(source.kind, SourceKind::LocalModel) {
+        return format!("local://{target}");
+    }
+    let authority = target
+        .split_once("://")
+        .map(|(_, remainder)| remainder)
+        .unwrap_or(target)
+        .split('/')
+        .next()
+        .unwrap_or(target)
+        .trim();
+    if authority.is_empty() {
+        "remote://unknown".to_string()
+    } else {
+        format!("remote://{authority}")
+    }
+}
+
+fn model_source_network_state_label(source: &SourceEntry) -> &'static str {
+    if matches!(source.kind, SourceKind::LocalModel) {
+        return "local_process_only";
+    }
+    if source.target.trim().starts_with("https://") {
+        "remote_tls"
+    } else {
+        "remote_insecure"
+    }
+}
+
+fn format_model_confidential_visibility_contract(
+    source: &SourceEntry,
+    metadata: &ConfidentialEndpointMetadata,
+) -> String {
+    let relay_status = if metadata.enabled {
+        "configured"
+    } else {
+        "disabled"
+    };
+    let attestation_status = if metadata.attestation_verifier.endpoint.trim().is_empty() {
+        "verifier_missing"
+    } else {
+        "verifier_configured"
+    };
+    let encryption_status = format!("configured_mode={:?}", metadata.encryption_mode);
+    format!(
+        "location={} runtime_class={} network_state={} relay_status={} attestation_status={} encryption_status={} fallback_state=explicit_consent_required logging_policy={}",
+        model_source_location_label(source),
+        model_source_runtime_class_label(source.kind),
+        model_source_network_state_label(source),
+        relay_status,
+        attestation_status,
+        clip_text(encryption_status.as_str(), 72),
+        clip_text(metadata.declared_logging_policy.as_str(), 48),
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn model_studio_panel(
     runtime_version: RwSignal<String>,
@@ -610,6 +676,39 @@ fn model_studio_panel(
                             ),
                             None => format!(
                                 "confidential source status: source {} has no confidential metadata",
+                                source.id
+                            ),
+                        }
+                    }
+                })
+                .style(|s| s.color(theme::text_secondary())),
+                label({
+                    let source_registry = source_registry.clone();
+                    move || {
+                        let target = model_source_target.get().trim().to_string();
+                        if target.is_empty() {
+                            return "confidential visibility contract: select source id".to_string();
+                        }
+                        let registry = match source_registry.try_borrow() {
+                            Ok(value) => value,
+                            Err(_) => {
+                                return "confidential visibility contract: source registry busy"
+                                    .to_string()
+                            }
+                        };
+                        let Some(source) = registry.get(target.as_str()) else {
+                            return format!(
+                                "confidential visibility contract: source {} not found",
+                                target
+                            );
+                        };
+                        match source.confidential_endpoint.as_ref() {
+                            Some(metadata) => format!(
+                                "confidential visibility contract: {}",
+                                format_model_confidential_visibility_contract(source, metadata)
+                            ),
+                            None => format!(
+                                "confidential visibility contract: source {} has no confidential metadata",
                                 source.id
                             ),
                         }

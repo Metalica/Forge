@@ -12,14 +12,17 @@ mod tests {
         default_chat_confidential_allow_remote_fallback, default_chat_confidential_profile_window,
         evaluate_flag_parity_with_env, evaluate_registry_with_default_checks,
         find_latest_gate_artifact_path, format_agent_graph, format_agent_trace_filtered,
+        format_confidential_banner,
         format_allocator_mode_status, format_confidential_relay_feature_status,
         format_confidential_visibility_status,
+        confidential_banner_is_warning,
         format_dense_math_status, format_extension_inventory_summary,
         format_extension_target_detail, format_feature_policy_snapshot, format_file_list,
         format_flag_parity, format_gate_artifact_status, format_gate_env_commands,
         format_gate_readiness, format_highway_status, format_io_uring_status, format_ispc_status,
         format_job_timeline, format_linux_memory_tuning_status, format_lmdb_metadata_status,
-        format_openvino_status, format_profiling_stack_status, format_rayon_parallelism_status,
+        format_model_confidential_visibility_contract, format_openvino_status,
+        format_profiling_stack_status, format_rayon_parallelism_status,
         format_release_optimization_status, format_runtime_benchmark_summary,
         format_runtime_pin_rollback_summary, format_rust_arch_simd_status,
         format_source_role_default, format_topology_placement_status, gate_run_command,
@@ -1536,6 +1539,61 @@ mod tests {
         assert!(status.contains("location=local://http://127.0.0.1:8080/completion"));
         assert!(status.contains("runtime_class=local_model_runtime"));
         assert!(status.contains("network_state=local_process_only"));
+    }
+
+    #[test]
+    fn model_confidential_visibility_contract_formats_cross_surface_fields() {
+        let source = SourceEntry {
+            id: "api-openai".to_string(),
+            display_name: "OpenAI".to_string(),
+            kind: SourceKind::ApiModel,
+            target: "https://api.openai.com/v1/chat/completions".to_string(),
+            enabled: true,
+            eligible_roles: vec![SourceRole::Chat],
+            default_roles: vec![SourceRole::Chat],
+            confidential_endpoint: None,
+        };
+        let metadata = runtime_registry::confidential_relay::ConfidentialEndpointMetadata {
+            enabled: true,
+            expected_target_prefix: "https://api.openai.com/v1".to_string(),
+            expected_attestation_provider: Some("azure-teechat".to_string()),
+            expected_measurement_prefixes: vec!["sha256:trusted-".to_string()],
+            attestation_verifier: runtime_registry::confidential_relay::AttestationVerifierConfig {
+                backend: runtime_registry::confidential_relay::AttestationVerifierBackend::HttpJsonV1,
+                endpoint: "https://attest.example/verify".to_string(),
+                api_key_env_var: None,
+                timeout_ms: 1500,
+            },
+            encryption_mode: runtime_registry::confidential_relay::RelayEncryptionMode::TlsHttps,
+            declared_logging_policy:
+                runtime_registry::confidential_relay::default_declared_logging_policy(),
+        };
+        let contract = format_model_confidential_visibility_contract(&source, &metadata);
+        assert!(contract.contains("location=remote://api.openai.com"));
+        assert!(contract.contains("runtime_class=remote_api_model"));
+        assert!(contract.contains("network_state=remote_tls"));
+        assert!(contract.contains("relay_status=configured"));
+        assert!(contract.contains("attestation_status=verifier_configured"));
+        assert!(contract.contains("fallback_state=explicit_consent_required"));
+    }
+
+    #[test]
+    fn confidential_banner_formats_verified_and_warning_states() {
+        let verified = format_confidential_banner(
+            "verified session=s1 key=k1 nonce=n1 relay_status=verified fallback_state=not_used",
+        );
+        assert!(verified.starts_with("OK: attested confidential relay verified"));
+        assert!(!confidential_banner_is_warning(
+            "verified session=s1 key=k1 nonce=n1 relay_status=verified fallback_state=not_used"
+        ));
+
+        let fallback_used = format_confidential_banner(
+            "confidential relay failed via x | fallback_state=remote_consented route=api remote_ms=20",
+        );
+        assert!(fallback_used.contains("remote fallback executed with one-time consent"));
+        assert!(confidential_banner_is_warning(
+            "confidential relay failed via x | fallback_state=remote_consented route=api remote_ms=20"
+        ));
     }
 
     #[test]

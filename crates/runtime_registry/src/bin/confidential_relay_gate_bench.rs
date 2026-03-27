@@ -5,8 +5,7 @@ use runtime_registry::confidential_relay::{
 };
 use runtime_registry::provider_adapter::{
     ChatTaskRequest, ConfidentialChatTaskRequest, ConfidentialFallbackConsent,
-    run_chat_task_with_source,
-    run_confidential_chat_task_with_source,
+    run_chat_task_with_source, run_confidential_chat_task_with_source,
 };
 use runtime_registry::source_registry::{SourceEntry, SourceKind, SourceRole};
 use serde_json::{Value, json};
@@ -193,7 +192,8 @@ fn run() -> Result<String, String> {
                 timeout_ms: 2_500,
             },
             encryption_mode: RelayEncryptionMode::TlsHttps,
-            declared_logging_policy: runtime_registry::confidential_relay::default_declared_logging_policy(),
+            declared_logging_policy:
+                runtime_registry::confidential_relay::default_declared_logging_policy(),
         }),
     };
 

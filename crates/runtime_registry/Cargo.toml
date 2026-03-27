@@ -21,6 +21,7 @@ serde_json = "1.0"
 ureq = { version = "2.12.1", default-features = true, features = ["json"] }
 urm = { path = "../urm" }
 forge_security = { path = "../forge_security" }
+sha2 = "0.10"
 mimalloc = { workspace = true, optional = true }
 tikv-jemallocator = { workspace = true, optional = true }
 snmalloc-rs = { workspace = true, optional = true }

@@ -2910,6 +2910,7 @@ dependencies = [
  "mimalloc",
  "serde",
  "serde_json",
+ "sha2",
  "snmalloc-rs",
  "tikv-jemallocator",
  "ureq",

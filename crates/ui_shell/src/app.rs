@@ -54,8 +54,8 @@ use runtime_registry::{
     provider_adapter::{
         ChatTaskRequest, CodexSpecialistTaskRequest, ConfidentialChatTaskRequest,
         ConfidentialFallbackConsent, RoleTaskRequest, run_chat_task_with_source,
-        run_codex_specialist_task,
-        run_confidential_chat_task_with_source, run_role_task_with_source,
+        run_codex_specialist_task, run_confidential_chat_task_with_source,
+        run_role_task_with_source,
     },
     source_registry::{
         SourceEntry, SourceKind, SourceRegistry, SourceRole, default_source_registry,

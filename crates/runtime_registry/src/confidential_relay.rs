@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::error::Error;
+use std::fmt::Write as _;
 use std::{
     env, fmt, fs,
     io::Read,
@@ -207,6 +209,10 @@ fn default_fallback_state() -> String {
     "unknown".to_string()
 }
 
+fn default_release_binding() -> String {
+    String::new()
+}
+
 impl Default for ConfidentialEndpointMetadata {
     fn default() -> Self {
         Self {
@@ -288,6 +294,8 @@ pub struct ConfidentialRelaySessionRecord {
     pub fallback_consent_captured_at_unix_ms: Option<u64>,
     #[serde(default = "default_fallback_state")]
     pub fallback_state: String,
+    #[serde(default = "default_release_binding")]
+    pub release_binding: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -766,6 +774,18 @@ fn fnv1a64_hex(input: &str) -> String {
     format!("fnv1a64:{hash:016x}")
 }
 
+fn sha256_hex(input: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(7 + digest.len() * 2);
+    out.push_str("sha256:");
+    for byte in digest {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
 pub fn build_confidential_policy_identity(
     source_id: &str,
     endpoint: &ConfidentialEndpointMetadata,
@@ -816,6 +836,34 @@ pub fn build_confidential_policy_identity(
         policy.max_attestation_age_ms,
     );
     fnv1a64_hex(canonical.as_str())
+}
+
+pub fn build_confidential_release_binding(
+    source_id: &str,
+    source_target: &str,
+    session_id: &str,
+    request_nonce: &str,
+    policy_identity: &str,
+    verified: &VerifiedAttestation,
+    endpoint: &ConfidentialEndpointMetadata,
+) -> String {
+    let canonical = format!(
+        "binding_v=1;source={};target={};session={};nonce={};policy_identity={};attestation_provider={};measurement={};verified_at={};expires_at={};cpu_confidential={};gpu_confidential={};encryption={};logging_policy={}",
+        source_id.trim(),
+        source_target.trim(),
+        session_id.trim(),
+        request_nonce.trim(),
+        policy_identity.trim(),
+        verified.provider.trim(),
+        verified.measurement.trim(),
+        verified.verified_at_unix_ms,
+        verified.expires_at_unix_ms,
+        verified.cpu_confidential,
+        verified.gpu_confidential,
+        relay_encryption_identity(endpoint.encryption_mode),
+        endpoint.declared_logging_policy.trim(),
+    );
+    sha256_hex(canonical.as_str())
 }
 
 pub fn build_confidential_session_id(source_id: &str, now_unix_ms: u64, nonce: &str) -> String {
@@ -879,7 +927,7 @@ mod tests {
         AttestationEvidence, AttestationVerifierConfig, ConfidentialEndpointMetadata,
         ConfidentialRelayMode, ConfidentialRelayPolicy, ConfidentialRelaySessionRecord,
         ConfidentialRelaySessionStore, RelayEncryptionMode, build_confidential_policy_identity,
-        verify_attestation,
+        build_confidential_release_binding, verify_attestation,
     };
     use std::{
         env, fs,
@@ -1130,6 +1178,7 @@ mod tests {
             fallback_consent_source: "tests.confidential_relay".to_string(),
             fallback_consent_captured_at_unix_ms: Some(1_900),
             fallback_state: "not_used".to_string(),
+            release_binding: "sha256:test-binding-a".to_string(),
         });
 
         let path = env::temp_dir().join("forge_confidential_relay_store_test.json");
@@ -1184,6 +1233,7 @@ mod tests {
             fallback_consent_source: "tests.confidential_relay".to_string(),
             fallback_consent_captured_at_unix_ms: Some(900),
             fallback_state: "not_used".to_string(),
+            release_binding: "sha256:test-binding-old".to_string(),
         });
         store.record_session(ConfidentialRelaySessionRecord {
             session_id: "relay-new".to_string(),
@@ -1210,6 +1260,7 @@ mod tests {
             fallback_consent_source: "tests.confidential_relay".to_string(),
             fallback_consent_captured_at_unix_ms: Some(2_900),
             fallback_state: "not_used".to_string(),
+            release_binding: "sha256:test-binding-new".to_string(),
         });
 
         let pruned = store.prune_expired(2_500);
@@ -1250,6 +1301,7 @@ mod tests {
             fallback_consent_source: "tests.confidential_relay".to_string(),
             fallback_consent_captured_at_unix_ms: Some(3_900),
             fallback_state: "not_used".to_string(),
+            release_binding: "sha256:test-binding-active".to_string(),
         });
         store.record_session(ConfidentialRelaySessionRecord {
             session_id: "relay-expired".to_string(),
@@ -1276,6 +1328,7 @@ mod tests {
             fallback_consent_source: "tests.confidential_relay".to_string(),
             fallback_consent_captured_at_unix_ms: Some(800),
             fallback_state: "not_used".to_string(),
+            release_binding: "sha256:test-binding-expired".to_string(),
         });
 
         assert!(store.is_nonce_replay("api-openai", "nonce-replay", 6_000));
@@ -1311,14 +1364,15 @@ mod tests {
                 cpu_confidential: true,
                 gpu_confidential: true,
                 encryption_mode: RelayEncryptionMode::TlsHttps,
-                declared_logging_policy:
-                    crate::confidential_relay::default_declared_logging_policy(),
+                declared_logging_policy: crate::confidential_relay::default_declared_logging_policy(
+                ),
                 policy_identity: format!("fnv1a64:test-policy-{idx}"),
                 fallback_consent_required: true,
                 fallback_consent_granted: idx % 2 == 0,
                 fallback_consent_source: "tests.confidential_relay".to_string(),
                 fallback_consent_captured_at_unix_ms: Some(idx * 1_000),
                 fallback_state: "not_used".to_string(),
+                release_binding: format!("sha256:test-binding-{idx}"),
             });
         }
 
@@ -1367,6 +1421,52 @@ mod tests {
         let identity_a = build_confidential_policy_identity("api-openai", &endpoint_a, &policy);
         let identity_b = build_confidential_policy_identity("api-openai", &endpoint_b, &policy);
         assert_eq!(identity_a, identity_b);
+    }
+
+    #[test]
+    fn release_binding_changes_when_policy_identity_changes() {
+        let endpoint = ConfidentialEndpointMetadata {
+            enabled: true,
+            expected_target_prefix: "https://api.openai.com/v1".to_string(),
+            expected_attestation_provider: Some("azure-teechat".to_string()),
+            expected_measurement_prefixes: vec!["sha256:trusted-a".to_string()],
+            attestation_verifier: AttestationVerifierConfig {
+                endpoint: "https://attest.example/verify".to_string(),
+                timeout_ms: 1_500,
+                ..AttestationVerifierConfig::default()
+            },
+            encryption_mode: RelayEncryptionMode::TlsHttps,
+            declared_logging_policy: crate::confidential_relay::default_declared_logging_policy(),
+        };
+        let verified = super::VerifiedAttestation {
+            provider: "azure-teechat".to_string(),
+            measurement: "sha256:trusted-a".to_string(),
+            cpu_confidential: true,
+            gpu_confidential: true,
+            verified_at_unix_ms: 1_000,
+            expires_at_unix_ms: 8_000,
+        };
+        let a = build_confidential_release_binding(
+            "api-openai",
+            "https://api.openai.com/v1",
+            "relay-a",
+            "nonce-a",
+            "fnv1a64:policy-a",
+            &verified,
+            &endpoint,
+        );
+        let b = build_confidential_release_binding(
+            "api-openai",
+            "https://api.openai.com/v1",
+            "relay-a",
+            "nonce-a",
+            "fnv1a64:policy-b",
+            &verified,
+            &endpoint,
+        );
+        assert_ne!(a, b);
+        assert!(a.starts_with("sha256:"));
+        assert_eq!(a.len(), "sha256:".len() + 64);
     }
 
     #[test]
@@ -1429,5 +1529,6 @@ mod tests {
         assert!(latest.fallback_consent_source.is_empty());
         assert_eq!(latest.fallback_consent_captured_at_unix_ms, None);
         assert_eq!(latest.fallback_state, "unknown");
+        assert!(latest.release_binding.is_empty());
     }
 }
