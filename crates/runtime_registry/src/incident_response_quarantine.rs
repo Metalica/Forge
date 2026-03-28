@@ -6,6 +6,8 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
+type QuarantineResult<T = ()> = Result<T, String>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IncidentResponseQuarantinePolicy {
     pub mode_enabled: bool,
@@ -69,7 +71,7 @@ pub fn enforce_incident_response_quarantine(
     route_label: &str,
     endpoint: &str,
     relay_requested: bool,
-) -> Result<IncidentResponseQuarantineDecision, String> {
+) -> QuarantineResult<IncidentResponseQuarantineDecision> {
     let policy = current_policy();
     enforce_incident_response_quarantine_with_policy(
         route_label,
@@ -111,7 +113,7 @@ fn enforce_incident_response_quarantine_with_policy(
     endpoint: &str,
     relay_requested: bool,
     policy: &IncidentResponseQuarantinePolicy,
-) -> Result<IncidentResponseQuarantineDecision, String> {
+) -> QuarantineResult<IncidentResponseQuarantineDecision> {
     let marker_present = policy
         .marker_path
         .as_ref()
@@ -182,7 +184,7 @@ fn enforce_incident_response_quarantine_with_policy(
 fn ensure_tamper_evident_evidence_bundle(
     policy: &IncidentResponseQuarantinePolicy,
     route_label: &str,
-) -> Result<(), String> {
+) -> QuarantineResult {
     let bundle_path = policy
         .evidence_bundle_path
         .as_ref()
@@ -225,7 +227,7 @@ fn ensure_tamper_evident_evidence_bundle(
     Ok(())
 }
 
-fn compute_sha256_hex(path: &str) -> Result<String, String> {
+fn compute_sha256_hex(path: &str) -> QuarantineResult<String> {
     let bytes = fs::read(path).map_err(|error| {
         format!("failed to read evidence bundle for digest calculation: {error}")
     })?;
@@ -237,7 +239,7 @@ fn compute_sha256_hex(path: &str) -> Result<String, String> {
     Ok(hex)
 }
 
-fn read_expected_digest(path: &str) -> Result<String, String> {
+fn read_expected_digest(path: &str) -> QuarantineResult<String> {
     let raw = fs::read_to_string(path)
         .map_err(|error| format!("failed to read evidence digest file: {error}"))?;
     let trimmed = raw.trim();
@@ -274,7 +276,23 @@ fn endpoint_is_allowlisted(endpoint: &str, allowlist: &[String]) -> bool {
     }
     allowlist
         .iter()
-        .any(|prefix| normalized_endpoint.starts_with(prefix.as_str()))
+        .map(|prefix| prefix.trim())
+        .filter(|prefix| !prefix.is_empty())
+        .any(|prefix| is_safe_allowlist_prefix_match(&normalized_endpoint, prefix))
+}
+
+fn is_safe_allowlist_prefix_match(endpoint: &str, prefix: &str) -> bool {
+    if !endpoint.starts_with(prefix) {
+        return false;
+    }
+    if prefix.ends_with('/') {
+        return true;
+    }
+    let remainder = &endpoint[prefix.len()..];
+    remainder.is_empty()
+        || remainder.starts_with('/')
+        || remainder.starts_with('?')
+        || remainder.starts_with('#')
 }
 
 fn parse_csv_list(raw: &str) -> Vec<String> {
@@ -450,5 +468,24 @@ mod tests {
         assert!(result.is_err());
         let error = result.err().unwrap_or_default();
         assert!(error.contains("digest mismatch"));
+    }
+
+    #[test]
+    fn quarantine_blocks_deceptive_recovery_prefix_endpoint() {
+        let root = env::temp_dir()
+            .join("forge_incident_quarantine_deceptive_prefix")
+            .to_string_lossy()
+            .to_string();
+        write_bundle_and_digest(root.as_str(), false);
+        set_test_policy_override(Some(sample_policy(root.as_str())));
+        let result = enforce_incident_response_quarantine(
+            "chat.recovery",
+            "https://recovery.example.evil.com/attestation/verify",
+            false,
+        );
+        set_test_policy_override(None);
+        assert!(result.is_err());
+        let error = result.err().unwrap_or_default();
+        assert!(error.contains("recovery allow-list"));
     }
 }

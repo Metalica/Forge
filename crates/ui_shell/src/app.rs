@@ -73,6 +73,7 @@ use crate::{api::PrimaryView, theme};
 
 static FORGE_LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static FORGE_PANIC_HOOK_INSTALLED: OnceLock<()> = OnceLock::new();
+type UiOperationResult<T = ()> = Result<T, String>;
 
 fn now_unix_ms() -> u128 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {

@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_PROVIDER_ADAPTER_AUDIT_EVENTS: usize = 4096;
 const PROVIDER_ADAPTER_AUDIT_SCHEMA_VERSION: u32 = 1;
+type ProviderAdapterAuditResult<T = ()> = Result<T, String>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProviderAdapterRouteClass {
@@ -84,7 +85,9 @@ pub fn latest_provider_adapter_audit_events(limit: usize) -> Vec<ProviderAdapter
     guard[start..].to_vec()
 }
 
-pub fn save_redacted_provider_adapter_audit_events_to_path(path: &Path) -> Result<(), String> {
+pub fn save_redacted_provider_adapter_audit_events_to_path(
+    path: &Path,
+) -> ProviderAdapterAuditResult {
     let events = {
         let guard = provider_adapter_audit_log()
             .lock()
@@ -109,9 +112,9 @@ pub fn guard_and_audit_provider_route<T, F>(
     source: &SourceEntry,
     operation: &str,
     action: F,
-) -> Result<T, String>
+) -> ProviderAdapterAuditResult<T>
 where
-    F: FnOnce() -> Result<T, String>,
+    F: FnOnce() -> ProviderAdapterAuditResult<T>,
 {
     let context = build_route_context(source);
     if let Err(error) = enforce_local_api_hardening(source, &context) {
@@ -172,7 +175,7 @@ fn build_route_context(source: &SourceEntry) -> ProviderAdapterRouteContext {
 fn enforce_local_api_hardening(
     source: &SourceEntry,
     context: &ProviderAdapterRouteContext,
-) -> Result<(), String> {
+) -> ProviderAdapterAuditResult {
     if !matches!(context.route_class, ProviderAdapterRouteClass::LocalBridge) {
         return Ok(());
     }
@@ -549,7 +552,7 @@ mod tests {
             confidential_endpoint: None,
         };
 
-        let _: Result<(), String> =
+        let _: super::ProviderAdapterAuditResult =
             guard_and_audit_provider_route(&source, "chat", || Err("synthetic deny".to_string()));
         let events = latest_provider_adapter_audit_events(128);
         let maybe_event = events.iter().rev().find(|event| {
@@ -578,9 +581,10 @@ mod tests {
             default_roles: vec![SourceRole::Chat],
             confidential_endpoint: None,
         };
-        let _: Result<(), String> = guard_and_audit_provider_route(&source, "chat", || {
-            Err("authorization: bearer sk-live-secret-token-1234567890".to_string())
-        });
+        let _: super::ProviderAdapterAuditResult =
+            guard_and_audit_provider_route(&source, "chat", || {
+                Err("authorization: bearer sk-live-secret-token-1234567890".to_string())
+            });
 
         let path = unique_temp_path("export_redaction");
         let saved = save_redacted_provider_adapter_audit_events_to_path(path.as_path());

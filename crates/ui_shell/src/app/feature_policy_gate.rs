@@ -169,7 +169,7 @@ fn save_agent_studio_state(
     path: &Path,
     orchestrator: &AgentOrchestrator,
     active_run_id: Option<u64>,
-) -> Result<(), String> {
+) -> UiOperationResult {
     let state = PersistedAgentStudioState {
         schema_version: 1,
         active_run_id,
@@ -205,7 +205,7 @@ fn load_media_studio_state(path: &Path) -> Option<PersistedMediaStudioState> {
     Some(state)
 }
 
-fn save_media_studio_state(path: &Path, state: &PersistedMediaStudioState) -> Result<(), String> {
+fn save_media_studio_state(path: &Path, state: &PersistedMediaStudioState) -> UiOperationResult {
     let encoded = serde_json::to_string_pretty(state).map_err(|error| error.to_string())?;
     fs::write(path, encoded).map_err(|error| error.to_string())
 }
@@ -292,7 +292,7 @@ fn load_project_memory_state(path: &Path) -> Option<ProjectMemoryStore> {
     Some(ProjectMemoryStore::restore(state.entries))
 }
 
-fn save_project_memory_state(path: &Path, store: &ProjectMemoryStore) -> Result<(), String> {
+fn save_project_memory_state(path: &Path, store: &ProjectMemoryStore) -> UiOperationResult {
     let state = PersistedProjectMemoryState {
         schema_version: 1,
         entries: store.snapshot(),
@@ -319,7 +319,7 @@ fn load_feature_policy_settings(path: &Path) -> Option<PersistedFeatureSettings>
 fn save_feature_policy_settings(
     path: &Path,
     settings: &PersistedFeatureSettings,
-) -> Result<(), String> {
+) -> UiOperationResult {
     let encoded = serde_json::to_string_pretty(settings).map_err(|error| error.to_string())?;
     fs::write(path, encoded).map_err(|error| error.to_string())
 }
@@ -355,7 +355,7 @@ fn evaluate_registry_with_default_checks(registry: &mut FeaturePolicyRegistry) {
 fn apply_topology_mode(
     registry: &mut FeaturePolicyRegistry,
     target_state: FeatureState,
-) -> Result<(), String> {
+) -> UiOperationResult {
     registry
         .set_requested_state(FeatureId::HwlocTopology, target_state)
         .map_err(|error| format!("failed to set hwloc topology state: {error:?}"))?;
@@ -369,7 +369,7 @@ fn apply_topology_mode(
 fn apply_openvino_mode(
     registry: &mut FeaturePolicyRegistry,
     target_state: FeatureState,
-) -> Result<(), String> {
+) -> UiOperationResult {
     registry
         .set_requested_state(FeatureId::OpenVinoBackend, target_state)
         .map_err(|error| format!("failed to set openvino backend state: {error:?}"))?;
@@ -380,7 +380,7 @@ fn apply_openvino_mode(
 fn apply_linux_memory_tuning_mode(
     registry: &mut FeaturePolicyRegistry,
     target_state: FeatureState,
-) -> Result<(), String> {
+) -> UiOperationResult {
     registry
         .set_requested_state(FeatureId::TransparentHugePages, target_state)
         .map_err(|error| format!("failed to set transparent huge pages state: {error:?}"))?;
@@ -397,7 +397,7 @@ fn apply_linux_memory_tuning_mode(
 fn apply_dense_math_mode(
     registry: &mut FeaturePolicyRegistry,
     target_state: FeatureState,
-) -> Result<(), String> {
+) -> UiOperationResult {
     registry
         .set_requested_state(FeatureId::OpenBlasBackend, target_state)
         .map_err(|error| format!("failed to set openblas backend state: {error:?}"))?;
@@ -411,7 +411,7 @@ fn apply_dense_math_mode(
 fn apply_allocator_mode(
     registry: &mut FeaturePolicyRegistry,
     target_state: FeatureState,
-) -> Result<(), String> {
+) -> UiOperationResult {
     registry
         .set_requested_state(FeatureId::MimallocAllocator, target_state)
         .map_err(|error| format!("failed to set mimalloc allocator state: {error:?}"))?;
@@ -428,7 +428,7 @@ fn apply_allocator_mode(
 fn apply_profiling_mode(
     registry: &mut FeaturePolicyRegistry,
     target_state: FeatureState,
-) -> Result<(), String> {
+) -> UiOperationResult {
     registry
         .set_requested_state(FeatureId::PerfProfiler, target_state)
         .map_err(|error| format!("failed to set perf profiler state: {error:?}"))?;
@@ -442,7 +442,7 @@ fn apply_profiling_mode(
 fn apply_release_optimization_mode(
     registry: &mut FeaturePolicyRegistry,
     target_state: FeatureState,
-) -> Result<(), String> {
+) -> UiOperationResult {
     registry
         .set_requested_state(FeatureId::AutoFdoOptimizer, target_state)
         .map_err(|error| format!("failed to set autofdo optimizer state: {error:?}"))?;
@@ -456,7 +456,7 @@ fn apply_release_optimization_mode(
 fn apply_ispc_mode(
     registry: &mut FeaturePolicyRegistry,
     target_state: FeatureState,
-) -> Result<(), String> {
+) -> UiOperationResult {
     registry
         .set_requested_state(FeatureId::IspcKernels, target_state)
         .map_err(|error| format!("failed to set ispc kernels state: {error:?}"))?;
@@ -467,7 +467,7 @@ fn apply_ispc_mode(
 fn apply_highway_mode(
     registry: &mut FeaturePolicyRegistry,
     target_state: FeatureState,
-) -> Result<(), String> {
+) -> UiOperationResult {
     registry
         .set_requested_state(FeatureId::HighwaySimd, target_state)
         .map_err(|error| format!("failed to set highway simd state: {error:?}"))?;
@@ -478,7 +478,7 @@ fn apply_highway_mode(
 fn apply_rust_arch_simd_mode(
     registry: &mut FeaturePolicyRegistry,
     target_state: FeatureState,
-) -> Result<(), String> {
+) -> UiOperationResult {
     registry
         .set_requested_state(FeatureId::RustArchSimd, target_state)
         .map_err(|error| format!("failed to set rust arch simd state: {error:?}"))?;
@@ -489,7 +489,7 @@ fn apply_rust_arch_simd_mode(
 fn apply_rayon_mode(
     registry: &mut FeaturePolicyRegistry,
     target_state: FeatureState,
-) -> Result<(), String> {
+) -> UiOperationResult {
     registry
         .set_requested_state(FeatureId::RayonParallelism, target_state)
         .map_err(|error| format!("failed to set rayon parallelism state: {error:?}"))?;
@@ -500,7 +500,7 @@ fn apply_rayon_mode(
 fn apply_io_uring_mode(
     registry: &mut FeaturePolicyRegistry,
     target_state: FeatureState,
-) -> Result<(), String> {
+) -> UiOperationResult {
     registry
         .set_requested_state(FeatureId::IoUring, target_state)
         .map_err(|error| format!("failed to set io_uring state: {error:?}"))?;
@@ -511,7 +511,7 @@ fn apply_io_uring_mode(
 fn apply_lmdb_metadata_mode(
     registry: &mut FeaturePolicyRegistry,
     target_state: FeatureState,
-) -> Result<(), String> {
+) -> UiOperationResult {
     registry
         .set_requested_state(FeatureId::LmdbMetadata, target_state)
         .map_err(|error| format!("failed to set lmdb metadata state: {error:?}"))?;
@@ -522,7 +522,7 @@ fn apply_lmdb_metadata_mode(
 fn apply_confidential_relay_feature_mode(
     registry: &mut FeaturePolicyRegistry,
     target_state: FeatureState,
-) -> Result<(), String> {
+) -> UiOperationResult {
     registry
         .set_requested_state(FeatureId::ConfidentialRelay, target_state)
         .map_err(|error| format!("failed to set confidential relay state: {error:?}"))?;
@@ -906,7 +906,7 @@ fn parse_selected_default_state(input: &str) -> Result<FeatureState, String> {
     }
 }
 
-fn validate_gate_artifact_for_defaults(artifact: &ConditionalGateArtifact) -> Result<(), String> {
+fn validate_gate_artifact_for_defaults(artifact: &ConditionalGateArtifact) -> UiOperationResult {
     if artifact.gate_passed != artifact.decision.passed {
         return Err("artifact mismatch: gate_passed and decision.passed diverge".to_string());
     }
@@ -1400,7 +1400,7 @@ fn format_lmdb_metadata_health_line(registry: &FeaturePolicyRegistry) -> String 
     }
 
     let root = lmdb_health_probe_root();
-    let probe = (|| -> Result<(), String> {
+    let probe = (|| -> UiOperationResult {
         let store = open_lmdb_metadata_store(&root, false)
             .map_err(|error| format!("open failed: {error}"))?;
         store
@@ -1496,4 +1496,3 @@ fn parse_feature_id_key(input: &str) -> Option<FeatureId> {
         _ => None,
     }
 }
-

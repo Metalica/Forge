@@ -782,7 +782,7 @@ fn load_job_queue_state(path: &Path) -> Option<PersistedJobQueueState> {
     Some(state)
 }
 
-fn save_job_queue_state(path: &Path, queue: &JobQueue) -> Result<(), String> {
+fn save_job_queue_state(path: &Path, queue: &JobQueue) -> UiOperationResult {
     let state = PersistedJobQueueState {
         schema_version: 1,
         queue: queue.snapshot_state(),
@@ -795,7 +795,7 @@ fn load_runtime_registry_state(path: &Path) -> Option<RuntimeRegistry> {
     RuntimeRegistry::load_from_path(path).ok()
 }
 
-fn save_runtime_registry_state(path: &Path, registry: &RuntimeRegistry) -> Result<(), String> {
+fn save_runtime_registry_state(path: &Path, registry: &RuntimeRegistry) -> UiOperationResult {
     Ok(registry.save_to_path(path)?)
 }
 
@@ -841,7 +841,7 @@ fn load_confidential_relay_sessions(path: &Path) -> Option<ConfidentialRelaySess
 fn save_confidential_relay_sessions(
     path: &Path,
     sessions: &ConfidentialRelaySessionStore,
-) -> Result<(), String> {
+) -> UiOperationResult {
     Ok(sessions.save_to_path(path)?)
 }
 
@@ -857,7 +857,7 @@ fn load_chat_confidential_state(path: &Path) -> Option<PersistedChatConfidential
 fn save_chat_confidential_state(
     path: &Path,
     state: &PersistedChatConfidentialState,
-) -> Result<(), String> {
+) -> UiOperationResult {
     let encoded = serde_json::to_string_pretty(state).map_err(|error| error.to_string())?;
     fs::write(path, encoded).map_err(|error| error.to_string())
 }
@@ -871,7 +871,7 @@ fn load_dock_layout_state(path: &Path) -> Option<PersistedDockLayoutState> {
     Some(state)
 }
 
-fn save_dock_layout_state(path: &Path, state: &PersistedDockLayoutState) -> Result<(), String> {
+fn save_dock_layout_state(path: &Path, state: &PersistedDockLayoutState) -> UiOperationResult {
     let encoded = serde_json::to_string_pretty(state).map_err(|error| error.to_string())?;
     fs::write(path, encoded).map_err(|error| error.to_string())
 }
@@ -888,7 +888,7 @@ fn load_extension_host_state(path: &Path) -> Option<ExtensionHost> {
     ExtensionHost::restore(state.runtimes).ok()
 }
 
-fn save_extension_host_state(path: &Path, host: &ExtensionHost) -> Result<(), String> {
+fn save_extension_host_state(path: &Path, host: &ExtensionHost) -> UiOperationResult {
     let state = PersistedExtensionHostState {
         schema_version: 1,
         runtimes: host.snapshot(),
@@ -901,7 +901,7 @@ fn load_source_registry_state(path: &Path) -> Option<SourceRegistry> {
     SourceRegistry::load_from_path(path).ok()
 }
 
-fn save_source_registry_state(path: &Path, registry: &SourceRegistry) -> Result<(), String> {
+fn save_source_registry_state(path: &Path, registry: &SourceRegistry) -> UiOperationResult {
     Ok(registry.save_to_path(path)?)
 }
 
@@ -1213,4 +1213,3 @@ fn apply_vulkan_benchmark_gate_from_registry(
         clip_text(&policy_note, 120)
     )
 }
-
