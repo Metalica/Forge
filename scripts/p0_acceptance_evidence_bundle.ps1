@@ -89,6 +89,15 @@ Ensure-Report -Path (Join-Path $artifactRoot "trust_zone_approval_matrix_report.
 Ensure-Report -Path (Join-Path $artifactRoot "dangerous_full_access_mode_report.json") -Generator {
     & "$PSScriptRoot\dangerous_full_access_mode_check.ps1" -ReportPath (Join-Path $artifactRoot "dangerous_full_access_mode_report.json")
 }
+Ensure-Report -Path (Join-Path $artifactRoot "silent_network_host_escalation_report.json") -Generator {
+    & "$PSScriptRoot\silent_network_host_escalation_check.ps1" -ReportPath (Join-Path $artifactRoot "silent_network_host_escalation_report.json")
+}
+Ensure-Report -Path (Join-Path $artifactRoot "third_party_bypass_lane_report.json") -Generator {
+    & "$PSScriptRoot\third_party_bypass_lane_check.ps1" -ReportPath (Join-Path $artifactRoot "third_party_bypass_lane_report.json")
+}
+Ensure-Report -Path (Join-Path $artifactRoot "crypto_design_note_report.json") -Generator {
+    & "$PSScriptRoot\crypto_design_note_check.ps1" -ReportPath (Join-Path $artifactRoot "crypto_design_note_report.json")
+}
 Ensure-Report -Path (Join-Path $artifactRoot "data_governance_egress_report.json") -Generator {
     & "$PSScriptRoot\data_governance_egress_check.ps1" -ReportPath (Join-Path $artifactRoot "data_governance_egress_report.json")
 }
@@ -205,6 +214,9 @@ $artifactSpecs = @(
     @{ name = "dangerous_action_reauth_report"; path = (Join-Path $artifactRoot "dangerous_action_reauth_report.json"); requirePassed = $true },
     @{ name = "trust_zone_approval_matrix_report"; path = (Join-Path $artifactRoot "trust_zone_approval_matrix_report.json"); requirePassed = $true },
     @{ name = "dangerous_full_access_mode_report"; path = (Join-Path $artifactRoot "dangerous_full_access_mode_report.json"); requirePassed = $true },
+    @{ name = "silent_network_host_escalation_report"; path = (Join-Path $artifactRoot "silent_network_host_escalation_report.json"); requirePassed = $true },
+    @{ name = "third_party_bypass_lane_report"; path = (Join-Path $artifactRoot "third_party_bypass_lane_report.json"); requirePassed = $true },
+    @{ name = "crypto_design_note_report"; path = (Join-Path $artifactRoot "crypto_design_note_report.json"); requirePassed = $true },
     @{ name = "data_governance_egress_report"; path = (Join-Path $artifactRoot "data_governance_egress_report.json"); requirePassed = $true },
     @{ name = "incident_response_quarantine_report"; path = (Join-Path $artifactRoot "incident_response_quarantine_report.json"); requirePassed = $true },
     @{ name = "forensic_reset_quarantine_drill_report"; path = (Join-Path $artifactRoot "forensic_reset_quarantine_drill_report.json"); requirePassed = $true },

@@ -1595,7 +1595,6 @@ impl ExtensionHost {
             }
 
             let mut runtime = ExtensionRuntime::new(entry.manifest);
-            runtime.state = entry.state;
             runtime.last_error = entry.last_error;
             runtime.overbroad_approved = entry.overbroad_approved;
 
@@ -1610,6 +1609,66 @@ impl ExtensionHost {
                     .granted_permissions
                     .entry(*permission)
                     .or_insert(false);
+            }
+
+            let security_gate = runtime
+                .manifest
+                .security_gate(host.forge_version.as_str(), &host.trusted_manifest_signers);
+            if let Err(error) = security_gate {
+                runtime.state = ExtensionState::FailedIsolated;
+                runtime.last_error = Some(format!(
+                    "restore blocked by manifest security policy: {error}"
+                ));
+                runtime.overbroad_approved = false;
+                for permission in &runtime.manifest.requested_permissions {
+                    runtime.granted_permissions.insert(*permission, false);
+                }
+                host.extensions.insert(runtime.manifest.id.clone(), runtime);
+                continue;
+            }
+
+            runtime.state = entry.state;
+            if matches!(runtime.state, ExtensionState::Enabled) {
+                if host.quarantine_mode {
+                    runtime.state = ExtensionState::Disabled;
+                    runtime.last_error = Some(
+                        "restore blocked: quarantine mode active; extension forced disabled"
+                            .to_string(),
+                    );
+                } else {
+                    let missing_permissions = runtime
+                        .manifest
+                        .requested_permissions
+                        .iter()
+                        .copied()
+                        .filter(|permission| {
+                            !runtime
+                                .granted_permissions
+                                .get(permission)
+                                .copied()
+                                .unwrap_or(false)
+                        })
+                        .collect::<Vec<_>>();
+                    if !missing_permissions.is_empty() {
+                        let missing = missing_permissions
+                            .iter()
+                            .map(|permission| permission.label().to_string())
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        runtime.state = ExtensionState::Disabled;
+                        runtime.last_error = Some(format!(
+                            "restore blocked: enabled state requires granted permissions [{missing}]"
+                        ));
+                    } else if runtime.manifest.requires_overbroad_approval()
+                        && !runtime.overbroad_approved
+                    {
+                        runtime.state = ExtensionState::Disabled;
+                        runtime.last_error = Some(
+                            "restore blocked: enabled overbroad extension requires explicit approval"
+                                .to_string(),
+                        );
+                    }
+                }
             }
 
             host.extensions.insert(runtime.manifest.id.clone(), runtime);
@@ -2328,7 +2387,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_restore_round_trip_preserves_overbroad_approval() {
+    fn snapshot_restore_untrusted_signer_clears_overbroad_and_isolates() {
         let mut host = ExtensionHost::new();
         register_test_manifest_signer(&mut host);
         assert!(host.register(overbroad_manifest()).is_ok());
@@ -2347,7 +2406,91 @@ mod tests {
             Some(value) => value,
             None => return,
         };
-        assert!(overbroad.overbroad_approved);
+        assert_eq!(overbroad.state, ExtensionState::FailedIsolated);
+        assert!(!overbroad.overbroad_approved);
+        assert!(
+            overbroad
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("restore blocked by manifest security policy")
+        );
+    }
+
+    #[test]
+    fn restore_snapshot_unsigned_manifest_is_isolated_fail_closed() {
+        let mut host = ExtensionHost::new();
+        register_test_manifest_signer(&mut host);
+        assert!(host.register(provider_manifest()).is_ok());
+        assert!(host.grant_all_permissions("provider").is_ok());
+        assert!(host.set_enabled("provider", true).is_ok());
+
+        let mut snapshot = host.snapshot();
+        assert_eq!(snapshot.len(), 1);
+        snapshot[0].manifest.signature = None;
+
+        let restored = ExtensionHost::restore(snapshot);
+        assert!(restored.is_ok());
+        let restored = match restored {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        let provider = restored.get("provider");
+        assert!(provider.is_some());
+        let provider = match provider {
+            Some(value) => value,
+            None => return,
+        };
+        assert_eq!(provider.state, ExtensionState::FailedIsolated);
+        assert!(
+            provider
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("restore blocked by manifest security policy")
+        );
+    }
+
+    #[test]
+    fn restore_snapshot_enabled_state_requires_granted_permissions() {
+        let mut host = default_extension_host();
+        assert!(host.grant_all_permissions("provider-openai").is_ok());
+        assert!(host.set_enabled("provider-openai", true).is_ok());
+
+        let mut snapshot = host.snapshot();
+        let provider_index = snapshot
+            .iter()
+            .position(|entry| entry.manifest.id == "provider-openai");
+        assert!(provider_index.is_some());
+        let provider_index = match provider_index {
+            Some(value) => value,
+            None => return,
+        };
+        snapshot[provider_index].state = ExtensionState::Enabled;
+        for grant in &mut snapshot[provider_index].granted_permissions {
+            grant.granted = false;
+        }
+
+        let restored = ExtensionHost::restore(snapshot);
+        assert!(restored.is_ok());
+        let restored = match restored {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        let provider = restored.get("provider-openai");
+        assert!(provider.is_some());
+        let provider = match provider {
+            Some(value) => value,
+            None => return,
+        };
+        assert_eq!(provider.state, ExtensionState::Disabled);
+        assert!(
+            provider
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("enabled state requires granted permissions")
+        );
     }
 
     #[test]

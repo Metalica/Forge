@@ -73,6 +73,24 @@ $requiredReports = @(
         path = Join-Path $ArtifactRoot "dangerous_full_access_mode_report.json"
         expected_check = "dangerous_full_access_mode_check"
         require_applies = $false
+    },
+    [PSCustomObject]@{
+        name = "silent_network_host_escalation"
+        path = Join-Path $ArtifactRoot "silent_network_host_escalation_report.json"
+        expected_check = "silent_network_host_escalation_check"
+        require_applies = $false
+    },
+    [PSCustomObject]@{
+        name = "third_party_bypass_lane"
+        path = Join-Path $ArtifactRoot "third_party_bypass_lane_report.json"
+        expected_check = "third_party_bypass_lane_check"
+        require_applies = $false
+    },
+    [PSCustomObject]@{
+        name = "crypto_design_note"
+        path = Join-Path $ArtifactRoot "crypto_design_note_report.json"
+        expected_check = "crypto_design_note_check"
+        require_applies = $false
     }
 )
 

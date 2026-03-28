@@ -36,6 +36,9 @@ try {
     Write-MockReport -Path (Join-Path $testRoot "dangerous_action_reauth_report.json") -Check "dangerous_action_reauth_check" -Passed $true
     Write-MockReport -Path (Join-Path $testRoot "trust_zone_approval_matrix_report.json") -Check "trust_zone_approval_matrix_check" -Passed $true
     Write-MockReport -Path (Join-Path $testRoot "dangerous_full_access_mode_report.json") -Check "dangerous_full_access_mode_check" -Passed $true
+    Write-MockReport -Path (Join-Path $testRoot "silent_network_host_escalation_report.json") -Check "silent_network_host_escalation_check" -Passed $true
+    Write-MockReport -Path (Join-Path $testRoot "third_party_bypass_lane_report.json") -Check "third_party_bypass_lane_check" -Passed $true
+    Write-MockReport -Path (Join-Path $testRoot "crypto_design_note_report.json") -Check "crypto_design_note_check" -Passed $true
 
     $reportPath = Join-Path $testRoot "relay_green_regression_suite_report.json"
     & "$PSScriptRoot\relay_green_regression_suite_check.ps1" `
@@ -52,7 +55,7 @@ try {
     if ($parsed.check -ne "relay_green_regression_suite_check") {
         throw "Unexpected check id in relay green-regression suite report."
     }
-    if ($null -eq $parsed.checks -or @($parsed.checks).Count -lt 9) {
+    if ($null -eq $parsed.checks -or @($parsed.checks).Count -lt 12) {
         throw "relay green-regression suite report is missing expected coverage."
     }
 

@@ -33,6 +33,21 @@ $requiredReports = @(
         name = "relay_green_regression_suite"
         path = Join-Path $ArtifactRoot "relay_green_regression_suite_report.json"
         expected_check = "relay_green_regression_suite_check"
+    },
+    [PSCustomObject]@{
+        name = "silent_network_host_escalation"
+        path = Join-Path $ArtifactRoot "silent_network_host_escalation_report.json"
+        expected_check = "silent_network_host_escalation_check"
+    },
+    [PSCustomObject]@{
+        name = "third_party_bypass_lane"
+        path = Join-Path $ArtifactRoot "third_party_bypass_lane_report.json"
+        expected_check = "third_party_bypass_lane_check"
+    },
+    [PSCustomObject]@{
+        name = "crypto_design_note"
+        path = Join-Path $ArtifactRoot "crypto_design_note_report.json"
+        expected_check = "crypto_design_note_check"
     }
 )
 
@@ -133,7 +148,13 @@ if (Test-Path -LiteralPath $relayReportPath) {
     try {
         $relay = Get-Content -LiteralPath $relayReportPath -Raw | ConvertFrom-Json -ErrorAction Stop
         $relayChecks = @($relay.checks | ForEach-Object { [string]$_.name })
-        $requiredRelayChecks = @("trust_zone_approval_matrix", "dangerous_full_access_mode")
+        $requiredRelayChecks = @(
+            "trust_zone_approval_matrix",
+            "dangerous_full_access_mode",
+            "silent_network_host_escalation",
+            "third_party_bypass_lane",
+            "crypto_design_note"
+        )
         $missingRelayChecks = @($requiredRelayChecks | Where-Object { $relayChecks -notcontains $_ })
         if ($missingRelayChecks.Count -gt 0) {
             $relayCoverageOk = $false
@@ -171,7 +192,13 @@ $report = [PSCustomObject]@{
         detail = $bundleDetail
     }
     relay_coverage = [PSCustomObject]@{
-        required = @("trust_zone_approval_matrix", "dangerous_full_access_mode")
+        required = @(
+            "trust_zone_approval_matrix",
+            "dangerous_full_access_mode",
+            "silent_network_host_escalation",
+            "third_party_bypass_lane",
+            "crypto_design_note"
+        )
         passed = $relayCoverageOk
         detail = $relayCoverageDetail
     }

@@ -32,6 +32,10 @@ impl WorkspaceClassification {
     }
 }
 
+fn default_remote_egress_allowed(_workspace_classification: WorkspaceClassification) -> bool {
+    false
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataGovernancePolicy {
     pub workspace_classification: WorkspaceClassification,
@@ -49,7 +53,8 @@ impl DataGovernancePolicy {
             .and_then(|value| WorkspaceClassification::from_env_value(value.as_str()))
             .unwrap_or(WorkspaceClassification::Internal);
 
-        let remote_egress_allowed = env_flag("FORGE_ALLOW_REMOTE_EGRESS").unwrap_or(true);
+        let remote_egress_allowed = env_flag("FORGE_ALLOW_REMOTE_EGRESS")
+            .unwrap_or(default_remote_egress_allowed(workspace_classification));
         let export_approved = env_flag("FORGE_EXPORT_APPROVED").unwrap_or(false);
         let export_approval_required =
             env_flag("FORGE_REQUIRE_EXPORT_APPROVAL").unwrap_or(matches!(
@@ -192,8 +197,22 @@ fn default_dlp_patterns() -> &'static [String] {
 #[cfg(test)]
 mod tests {
     use super::{
-        DataGovernancePolicy, WorkspaceClassification, enforce_remote_egress_policy_with_policy,
+        DataGovernancePolicy, WorkspaceClassification, default_remote_egress_allowed,
+        enforce_remote_egress_policy_with_policy,
     };
+
+    #[test]
+    fn remote_egress_default_is_fail_closed_for_all_workspace_classes() {
+        let all_classes = [
+            WorkspaceClassification::Public,
+            WorkspaceClassification::Internal,
+            WorkspaceClassification::Confidential,
+            WorkspaceClassification::Restricted,
+        ];
+        for class in all_classes {
+            assert!(!default_remote_egress_allowed(class));
+        }
+    }
 
     #[test]
     fn restricted_workspace_requires_explicit_export_approval() {

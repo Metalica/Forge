@@ -24,6 +24,9 @@ New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
 try {
     Write-MockReport -Path (Join-Path $testRoot "trust_zone_approval_matrix_report.json") -Check "trust_zone_approval_matrix_check" -Passed $true
     Write-MockReport -Path (Join-Path $testRoot "dangerous_full_access_mode_report.json") -Check "dangerous_full_access_mode_check" -Passed $true
+    Write-MockReport -Path (Join-Path $testRoot "silent_network_host_escalation_report.json") -Check "silent_network_host_escalation_check" -Passed $true
+    Write-MockReport -Path (Join-Path $testRoot "third_party_bypass_lane_report.json") -Check "third_party_bypass_lane_check" -Passed $true
+    Write-MockReport -Path (Join-Path $testRoot "crypto_design_note_report.json") -Check "crypto_design_note_check" -Passed $true
     @{
         schema_version = 1
         generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
@@ -31,7 +34,10 @@ try {
         passed = $true
         checks = @(
             @{ name = "trust_zone_approval_matrix"; passed = $true },
-            @{ name = "dangerous_full_access_mode"; passed = $true }
+            @{ name = "dangerous_full_access_mode"; passed = $true },
+            @{ name = "silent_network_host_escalation"; passed = $true },
+            @{ name = "third_party_bypass_lane"; passed = $true },
+            @{ name = "crypto_design_note"; passed = $true }
         )
     } | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath (Join-Path $testRoot "relay_green_regression_suite_report.json") -Encoding UTF8
     @{
