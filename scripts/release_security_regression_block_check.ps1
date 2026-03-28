@@ -48,6 +48,11 @@ $requiredReports = @(
         name = "crypto_design_note"
         path = Join-Path $ArtifactRoot "crypto_design_note_report.json"
         expected_check = "crypto_design_note_check"
+    },
+    [PSCustomObject]@{
+        name = "evidence_manifest_integrity"
+        path = Join-Path $ArtifactRoot "evidence_manifest_integrity_report.json"
+        expected_check = "evidence_manifest_integrity_check"
     }
 )
 

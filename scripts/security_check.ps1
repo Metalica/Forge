@@ -129,9 +129,13 @@ if (-not (Test-Path -LiteralPath $policyBaselinePath)) {
 & "$PSScriptRoot\test_release_candidate_secret_leak_check.ps1"
 & "$PSScriptRoot\test_relay_green_regression_suite_check.ps1"
 & "$PSScriptRoot\test_linux_integrity_enforcement_check.ps1"
+& "$PSScriptRoot\test_evidence_manifest_integrity_check.ps1"
 & "$PSScriptRoot\test_release_security_regression_block_check.ps1"
 
 & "$PSScriptRoot\p0_acceptance_evidence_bundle.ps1"
+& "$PSScriptRoot\evidence_manifest_integrity_check.ps1" `
+    -ReportPath (Join-Path $securityArtifactRoot "evidence_manifest_integrity_report.json") `
+    -ManifestPath (Join-Path $securityArtifactRoot "evidence_integrity_manifest.json")
 & "$PSScriptRoot\release_security_regression_block_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "release_security_regression_block_report.json")
 
 function Invoke-Checked {
