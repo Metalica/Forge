@@ -64,6 +64,30 @@ AES-256 Argon2id Ed25519 SHA-256
         throw "crypto design note check should include missing required section findings."
     }
 
+    $missingPath = Join-Path $testRoot "MISSING_FORGE_CRYPTO_DESIGN_NOTE.md"
+    $missingReportPath = Join-Path $testRoot "crypto_design_note_report_missing.json"
+    & "$PSScriptRoot\crypto_design_note_check.ps1" `
+        -DesignNotePath $missingPath `
+        -ReportPath $missingReportPath
+    $missing = Get-Content -LiteralPath $missingReportPath -Raw | ConvertFrom-Json
+    if (-not [bool]$missing.passed) {
+        throw "crypto design note check should pass in default local-only mode when note file is missing."
+    }
+    if ([bool]$missing.applies) {
+        throw "crypto design note check should report applies=false when note file is missing in local-only mode."
+    }
+
+    $strictMissingReportPath = Join-Path $testRoot "crypto_design_note_report_missing_strict.json"
+    & "$PSScriptRoot\crypto_design_note_check.ps1" `
+        -DesignNotePath $missingPath `
+        -ReportPath $strictMissingReportPath `
+        -RequireDesignNote `
+        -FailOnFindings:$false
+    $strictMissing = Get-Content -LiteralPath $strictMissingReportPath -Raw | ConvertFrom-Json
+    if ([bool]$strictMissing.passed) {
+        throw "crypto design note check should fail in strict mode when note file is missing."
+    }
+
     Write-Host "crypto_design_note_check.ps1 self-test passed."
 }
 finally {

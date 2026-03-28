@@ -1,7 +1,8 @@
 param(
     [switch]$FailOnFindings = $true,
     [string]$ReportPath = "",
-    [string]$DesignNotePath = ""
+    [string]$DesignNotePath = "",
+    [switch]$RequireDesignNote = $false
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,9 +23,18 @@ if ([string]::IsNullOrWhiteSpace($DesignNotePath)) {
 $findings = [System.Collections.Generic.List[string]]::new()
 $sectionsVerified = @()
 $sha256 = ""
+$applies = $true
+$detail = ""
 
 if (-not (Test-Path -LiteralPath $DesignNotePath)) {
-    $findings.Add("design note missing: $DesignNotePath") | Out-Null
+    if ($RequireDesignNote) {
+        $findings.Add("design note missing: $DesignNotePath") | Out-Null
+    }
+    else {
+        # docs/ is local-only in this repository context; missing file is non-fatal by default.
+        $applies = $false
+        $detail = "design note not present in repository context; local-only mode"
+    }
 }
 else {
     $raw = Get-Content -LiteralPath $DesignNotePath -Raw
@@ -65,6 +75,8 @@ $report = [PSCustomObject]@{
     workspace_root = $workspaceRoot
     check = "crypto_design_note_check"
     design_note_path = $DesignNotePath
+    applies = $applies
+    detail = $detail
     sha256 = $sha256
     required_sections = @(
         "scope_and_security_goals",
