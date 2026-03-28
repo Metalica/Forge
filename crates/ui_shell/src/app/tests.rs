@@ -30,14 +30,15 @@ mod tests {
         load_extension_host_state, load_gate_artifact, load_job_queue_state,
         load_media_studio_state, load_project_memory_state, load_runtime_registry_state,
         load_source_registry_state, parse_confidential_mode_input, parse_memory_scope_input,
-        parse_profile_window_size_input, parse_selected_default_state, parse_source_role_input,
+        parse_opt_in_flag, parse_profile_window_size_input, parse_selected_default_state,
+        parse_source_role_input,
         queue_complete_tracked_job, queue_fail_tracked_job, queue_start_tracked_job,
         resolve_source_route_for_role, save_agent_studio_state, save_chat_confidential_state,
         save_dock_layout_state, save_extension_host_state, save_job_queue_state,
         save_media_studio_state, save_project_memory_state, save_runtime_registry_state,
         save_source_registry_state, should_auto_run_codex_for_started_step,
         should_auto_run_routed_for_started_step, source_role_for_agent_role,
-        validate_gate_artifact_for_defaults,
+        validate_gate_artifact_for_defaults, DANGEROUS_EXTENSION_CONTROLS_ENV,
     };
     use super::{RuntimeProcessState, sync_runtime_process_signals};
     use control_plane::agent_orchestrator::{AgentOrchestrator, AgentRole};
@@ -2641,6 +2642,27 @@ mod tests {
         let detail = format_extension_target_detail(&host, "provider-openai");
         assert!(detail.contains("permission-check=pass"));
         assert!(detail.contains("granted_permissions=[external_apis,network]"));
+    }
+
+    #[test]
+    fn dangerous_extension_controls_flag_is_opt_in_only() {
+        assert!(!parse_opt_in_flag(None));
+        assert!(!parse_opt_in_flag(Some("")));
+        assert!(!parse_opt_in_flag(Some("0")));
+        assert!(!parse_opt_in_flag(Some("false")));
+        assert!(!parse_opt_in_flag(Some("disable")));
+        assert!(parse_opt_in_flag(Some("1")));
+        assert!(parse_opt_in_flag(Some("true")));
+        assert!(parse_opt_in_flag(Some("ENABLED")));
+        assert!(parse_opt_in_flag(Some(" yes ")));
+    }
+
+    #[test]
+    fn dangerous_extension_controls_env_name_is_stable() {
+        assert_eq!(
+            DANGEROUS_EXTENSION_CONTROLS_ENV,
+            "FORGE_ENABLE_DANGEROUS_EXTENSION_CONTROLS"
+        );
     }
 
     #[test]

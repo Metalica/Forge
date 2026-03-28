@@ -83,6 +83,12 @@ Ensure-Report -Path (Join-Path $artifactRoot "runtime_residual_cleanup_report.js
 Ensure-Report -Path (Join-Path $artifactRoot "dangerous_action_reauth_report.json") -Generator {
     & "$PSScriptRoot\dangerous_action_reauth_check.ps1" -ReportPath (Join-Path $artifactRoot "dangerous_action_reauth_report.json")
 }
+Ensure-Report -Path (Join-Path $artifactRoot "trust_zone_approval_matrix_report.json") -Generator {
+    & "$PSScriptRoot\trust_zone_approval_matrix_check.ps1" -ReportPath (Join-Path $artifactRoot "trust_zone_approval_matrix_report.json")
+}
+Ensure-Report -Path (Join-Path $artifactRoot "dangerous_full_access_mode_report.json") -Generator {
+    & "$PSScriptRoot\dangerous_full_access_mode_check.ps1" -ReportPath (Join-Path $artifactRoot "dangerous_full_access_mode_report.json")
+}
 Ensure-Report -Path (Join-Path $artifactRoot "data_governance_egress_report.json") -Generator {
     & "$PSScriptRoot\data_governance_egress_check.ps1" -ReportPath (Join-Path $artifactRoot "data_governance_egress_report.json")
 }
@@ -197,6 +203,8 @@ $artifactSpecs = @(
     @{ name = "deep_linux_sandbox_profile_report"; path = (Join-Path $artifactRoot "deep_linux_sandbox_profile_report.json"); requirePassed = $true },
     @{ name = "runtime_residual_cleanup_report"; path = (Join-Path $artifactRoot "runtime_residual_cleanup_report.json"); requirePassed = $true },
     @{ name = "dangerous_action_reauth_report"; path = (Join-Path $artifactRoot "dangerous_action_reauth_report.json"); requirePassed = $true },
+    @{ name = "trust_zone_approval_matrix_report"; path = (Join-Path $artifactRoot "trust_zone_approval_matrix_report.json"); requirePassed = $true },
+    @{ name = "dangerous_full_access_mode_report"; path = (Join-Path $artifactRoot "dangerous_full_access_mode_report.json"); requirePassed = $true },
     @{ name = "data_governance_egress_report"; path = (Join-Path $artifactRoot "data_governance_egress_report.json"); requirePassed = $true },
     @{ name = "incident_response_quarantine_report"; path = (Join-Path $artifactRoot "incident_response_quarantine_report.json"); requirePassed = $true },
     @{ name = "forensic_reset_quarantine_drill_report"; path = (Join-Path $artifactRoot "forensic_reset_quarantine_drill_report.json"); requirePassed = $true },

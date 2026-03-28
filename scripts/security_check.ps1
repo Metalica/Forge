@@ -52,6 +52,8 @@ function Ensure-PolicyIntegrityKey {
 & "$PSScriptRoot\deep_linux_sandbox_profile_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "deep_linux_sandbox_profile_report.json")
 & "$PSScriptRoot\runtime_residual_cleanup_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "runtime_residual_cleanup_report.json")
 & "$PSScriptRoot\dangerous_action_reauth_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "dangerous_action_reauth_report.json")
+& "$PSScriptRoot\trust_zone_approval_matrix_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "trust_zone_approval_matrix_report.json")
+& "$PSScriptRoot\dangerous_full_access_mode_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "dangerous_full_access_mode_report.json")
 & "$PSScriptRoot\data_governance_egress_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "data_governance_egress_report.json")
 & "$PSScriptRoot\incident_response_quarantine_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "incident_response_quarantine_report.json")
 & "$PSScriptRoot\model_provider_trust_policy_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "model_provider_trust_policy_report.json")
@@ -106,6 +108,8 @@ if (-not (Test-Path -LiteralPath $policyBaselinePath)) {
 & "$PSScriptRoot\test_deep_linux_sandbox_profile_check.ps1"
 & "$PSScriptRoot\test_runtime_residual_cleanup_check.ps1"
 & "$PSScriptRoot\test_dangerous_action_reauth_check.ps1"
+& "$PSScriptRoot\test_trust_zone_approval_matrix_check.ps1"
+& "$PSScriptRoot\test_dangerous_full_access_mode_check.ps1"
 & "$PSScriptRoot\test_data_governance_egress_check.ps1"
 & "$PSScriptRoot\test_incident_response_quarantine_check.ps1"
 & "$PSScriptRoot\test_forensic_reset_quarantine_drill_check.ps1"
@@ -119,8 +123,10 @@ if (-not (Test-Path -LiteralPath $policyBaselinePath)) {
 & "$PSScriptRoot\test_release_candidate_secret_leak_check.ps1"
 & "$PSScriptRoot\test_relay_green_regression_suite_check.ps1"
 & "$PSScriptRoot\test_linux_integrity_enforcement_check.ps1"
+& "$PSScriptRoot\test_release_security_regression_block_check.ps1"
 
 & "$PSScriptRoot\p0_acceptance_evidence_bundle.ps1"
+& "$PSScriptRoot\release_security_regression_block_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "release_security_regression_block_report.json")
 
 function Invoke-Checked {
     param(

@@ -61,6 +61,18 @@ $requiredReports = @(
         path = Join-Path $ArtifactRoot "dangerous_action_reauth_report.json"
         expected_check = "dangerous_action_reauth_check"
         require_applies = $false
+    },
+    [PSCustomObject]@{
+        name = "trust_zone_approval_matrix"
+        path = Join-Path $ArtifactRoot "trust_zone_approval_matrix_report.json"
+        expected_check = "trust_zone_approval_matrix_check"
+        require_applies = $false
+    },
+    [PSCustomObject]@{
+        name = "dangerous_full_access_mode"
+        path = Join-Path $ArtifactRoot "dangerous_full_access_mode_report.json"
+        expected_check = "dangerous_full_access_mode_check"
+        require_applies = $false
     }
 )
 

@@ -1,3 +1,23 @@
+const DANGEROUS_EXTENSION_CONTROLS_ENV: &str = "FORGE_ENABLE_DANGEROUS_EXTENSION_CONTROLS";
+
+fn parse_opt_in_flag(value: Option<&str>) -> bool {
+    let Some(raw) = value else {
+        return false;
+    };
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on" | "enable" | "enabled"
+    )
+}
+
+fn dangerous_extension_controls_enabled() -> bool {
+    parse_opt_in_flag(
+        std::env::var(DANGEROUS_EXTENSION_CONTROLS_ENV)
+            .ok()
+            .as_deref(),
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn agent_studio_panel(
     workspace: Rc<WorkspaceHost>,
@@ -951,6 +971,13 @@ fn extensions_panel(
     let grant_permissions_action = {
         let extension_host = extension_host.clone();
         move || {
+            if !dangerous_extension_controls_enabled() {
+                extension_status.set(format!(
+                    "grant blocked: dangerous extension controls are disabled in normal UX (set {}=1 for supervised sessions)",
+                    DANGEROUS_EXTENSION_CONTROLS_ENV
+                ));
+                return;
+            }
             let target = extension_target.get().trim().to_string();
             if target.is_empty() {
                 extension_status.set(String::from("grant skipped: extension id is empty"));
@@ -991,6 +1018,13 @@ fn extensions_panel(
     let approve_overbroad_action = {
         let extension_host = extension_host.clone();
         move || {
+            if !dangerous_extension_controls_enabled() {
+                extension_status.set(format!(
+                    "approve broad scope blocked: dangerous extension controls are disabled in normal UX (set {}=1 for supervised sessions)",
+                    DANGEROUS_EXTENSION_CONTROLS_ENV
+                ));
+                return;
+            }
             let target = extension_target.get().trim().to_string();
             if target.is_empty() {
                 extension_status.set(String::from(
