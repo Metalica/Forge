@@ -94,6 +94,9 @@ Ensure-Report -Path (Join-Path $artifactRoot "incident_response_quarantine_repor
 Ensure-Report -Path (Join-Path $artifactRoot "model_provider_trust_policy_report.json") -Generator {
     & "$PSScriptRoot\model_provider_trust_policy_check.ps1" -ReportPath (Join-Path $artifactRoot "model_provider_trust_policy_report.json")
 }
+Ensure-Report -Path (Join-Path $artifactRoot "relay_adversarial_regression_report.json") -Generator {
+    & "$PSScriptRoot\relay_adversarial_regression_check.ps1" -ReportPath (Join-Path $artifactRoot "relay_adversarial_regression_report.json")
+}
 Ensure-Report -Path (Join-Path $artifactRoot "boot_host_integrity_report.json") -Generator {
     & "$PSScriptRoot\boot_host_integrity_check.ps1" -ReportPath (Join-Path $artifactRoot "boot_host_integrity_report.json")
 }
@@ -170,6 +173,7 @@ $artifactSpecs = @(
     @{ name = "data_governance_egress_report"; path = (Join-Path $artifactRoot "data_governance_egress_report.json"); requirePassed = $true },
     @{ name = "incident_response_quarantine_report"; path = (Join-Path $artifactRoot "incident_response_quarantine_report.json"); requirePassed = $true },
     @{ name = "model_provider_trust_policy_report"; path = (Join-Path $artifactRoot "model_provider_trust_policy_report.json"); requirePassed = $true },
+    @{ name = "relay_adversarial_regression_report"; path = (Join-Path $artifactRoot "relay_adversarial_regression_report.json"); requirePassed = $true },
     @{ name = "boot_host_integrity_report"; path = (Join-Path $artifactRoot "boot_host_integrity_report.json"); requirePassed = $true },
     @{ name = "artifact_supply_chain_integrity_report"; path = (Join-Path $artifactRoot "artifact_supply_chain_integrity_report.json"); requirePassed = $true },
     @{ name = "linux_integrity_enforcement_report"; path = (Join-Path $artifactRoot "linux_integrity_enforcement_report.json"); requirePassed = $true },
