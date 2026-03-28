@@ -946,7 +946,7 @@ mod tests {
         let _ = orchestrator.complete_step(run_id, "planner", "plan done");
         let _ = orchestrator.start_next_step(run_id);
         let _ = orchestrator.request_approval(run_id, "coder", "needs review");
-        let deny = orchestrator.resolve_approval(run_id, "coder", false, "unsafe scope");
+        let deny = orchestrator.resolve_approval(run_id, "coder", false, "high-risk scope");
         assert!(deny.is_ok());
 
         let run = orchestrator.run(run_id);

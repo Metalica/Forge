@@ -290,7 +290,10 @@ fn determine_model_risk_tier(
             return *tier;
         }
     }
-    if normalized.contains("unsafe") || normalized.contains("experimental") {
+    if normalized.contains("risky")
+        || normalized.contains("high-risk")
+        || normalized.contains("experimental")
+    {
         return ModelRiskTier::Critical;
     }
     if normalized.contains("gpt-5.4")
