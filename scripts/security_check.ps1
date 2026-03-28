@@ -55,8 +55,10 @@ function Ensure-PolicyIntegrityKey {
 & "$PSScriptRoot\data_governance_egress_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "data_governance_egress_report.json")
 & "$PSScriptRoot\incident_response_quarantine_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "incident_response_quarantine_report.json")
 & "$PSScriptRoot\model_provider_trust_policy_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "model_provider_trust_policy_report.json")
+& "$PSScriptRoot\forensic_reset_quarantine_drill_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "forensic_reset_quarantine_drill_report.json")
 & "$PSScriptRoot\relay_adversarial_regression_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "relay_adversarial_regression_report.json")
 & "$PSScriptRoot\relay_adversarial_corpus_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "relay_adversarial_corpus_report.json")
+& "$PSScriptRoot\relay_attack_corpus_maintenance_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "relay_attack_corpus_maintenance_report.json")
 & "$PSScriptRoot\boot_host_integrity_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "boot_host_integrity_report.json")
 & "$PSScriptRoot\artifact_supply_chain_integrity_check.ps1" `
     -ReportPath (Join-Path $securityArtifactRoot "artifact_supply_chain_integrity_report.json") `
@@ -65,6 +67,8 @@ function Ensure-PolicyIntegrityKey {
     -ReportPath (Join-Path $securityArtifactRoot "runtime_update_chain_integrity_report.json")
 & "$PSScriptRoot\release_candidate_secret_leak_check.ps1" `
     -ReportPath (Join-Path $securityArtifactRoot "release_candidate_secret_leak_report.json")
+& "$PSScriptRoot\relay_green_regression_suite_check.ps1" `
+    -ReportPath (Join-Path $securityArtifactRoot "relay_green_regression_suite_report.json")
 & "$PSScriptRoot\linux_integrity_enforcement_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "linux_integrity_enforcement_report.json")
 
 $policyBaselinePath = Join-Path $securityArtifactRoot "policy_integrity_baseline.json"
@@ -104,13 +108,16 @@ if (-not (Test-Path -LiteralPath $policyBaselinePath)) {
 & "$PSScriptRoot\test_dangerous_action_reauth_check.ps1"
 & "$PSScriptRoot\test_data_governance_egress_check.ps1"
 & "$PSScriptRoot\test_incident_response_quarantine_check.ps1"
+& "$PSScriptRoot\test_forensic_reset_quarantine_drill_check.ps1"
 & "$PSScriptRoot\test_model_provider_trust_policy_check.ps1"
 & "$PSScriptRoot\test_relay_adversarial_regression_check.ps1"
 & "$PSScriptRoot\test_relay_adversarial_corpus_check.ps1"
+& "$PSScriptRoot\test_relay_attack_corpus_maintenance_check.ps1"
 & "$PSScriptRoot\test_boot_host_integrity_check.ps1"
 & "$PSScriptRoot\test_artifact_supply_chain_integrity_check.ps1"
 & "$PSScriptRoot\test_runtime_update_chain_integrity_check.ps1"
 & "$PSScriptRoot\test_release_candidate_secret_leak_check.ps1"
+& "$PSScriptRoot\test_relay_green_regression_suite_check.ps1"
 & "$PSScriptRoot\test_linux_integrity_enforcement_check.ps1"
 
 & "$PSScriptRoot\p0_acceptance_evidence_bundle.ps1"

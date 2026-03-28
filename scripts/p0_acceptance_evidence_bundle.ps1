@@ -91,6 +91,13 @@ Ensure-Report -Path (Join-Path $artifactRoot "incident_response_quarantine_repor
         -ReportPath (Join-Path $artifactRoot "incident_response_quarantine_report.json") `
         -EvidenceDigestPath (Join-Path $artifactRoot "incident_quarantine_evidence_digest.json")
 }
+Ensure-Report -Path (Join-Path $artifactRoot "forensic_reset_quarantine_drill_report.json") -Generator {
+    & "$PSScriptRoot\forensic_reset_quarantine_drill_check.ps1" `
+        -ReportPath (Join-Path $artifactRoot "forensic_reset_quarantine_drill_report.json") `
+        -DangerousActionReportPath (Join-Path $artifactRoot "dangerous_action_reauth_report.json") `
+        -IncidentReportPath (Join-Path $artifactRoot "incident_response_quarantine_report.json") `
+        -EvidenceDigestPath (Join-Path $artifactRoot "incident_quarantine_evidence_digest.json")
+}
 Ensure-Report -Path (Join-Path $artifactRoot "model_provider_trust_policy_report.json") -Generator {
     & "$PSScriptRoot\model_provider_trust_policy_check.ps1" -ReportPath (Join-Path $artifactRoot "model_provider_trust_policy_report.json")
 }
@@ -99,6 +106,11 @@ Ensure-Report -Path (Join-Path $artifactRoot "relay_adversarial_regression_repor
 }
 Ensure-Report -Path (Join-Path $artifactRoot "relay_adversarial_corpus_report.json") -Generator {
     & "$PSScriptRoot\relay_adversarial_corpus_check.ps1" -ReportPath (Join-Path $artifactRoot "relay_adversarial_corpus_report.json")
+}
+Ensure-Report -Path (Join-Path $artifactRoot "relay_attack_corpus_maintenance_report.json") -Generator {
+    & "$PSScriptRoot\relay_attack_corpus_maintenance_check.ps1" `
+        -ReportPath (Join-Path $artifactRoot "relay_attack_corpus_maintenance_report.json") `
+        -CorpusReportPath (Join-Path $artifactRoot "relay_adversarial_corpus_report.json")
 }
 Ensure-Report -Path (Join-Path $artifactRoot "boot_host_integrity_report.json") -Generator {
     & "$PSScriptRoot\boot_host_integrity_check.ps1" -ReportPath (Join-Path $artifactRoot "boot_host_integrity_report.json")
@@ -115,6 +127,10 @@ Ensure-Report -Path (Join-Path $artifactRoot "runtime_update_chain_integrity_rep
 Ensure-Report -Path (Join-Path $artifactRoot "release_candidate_secret_leak_report.json") -Generator {
     & "$PSScriptRoot\release_candidate_secret_leak_check.ps1" `
         -ReportPath (Join-Path $artifactRoot "release_candidate_secret_leak_report.json")
+}
+Ensure-Report -Path (Join-Path $artifactRoot "relay_green_regression_suite_report.json") -Generator {
+    & "$PSScriptRoot\relay_green_regression_suite_check.ps1" `
+        -ReportPath (Join-Path $artifactRoot "relay_green_regression_suite_report.json")
 }
 Ensure-Report -Path (Join-Path $artifactRoot "linux_integrity_enforcement_report.json") -Generator {
     & "$PSScriptRoot\linux_integrity_enforcement_check.ps1" -ReportPath (Join-Path $artifactRoot "linux_integrity_enforcement_report.json")
@@ -183,13 +199,16 @@ $artifactSpecs = @(
     @{ name = "dangerous_action_reauth_report"; path = (Join-Path $artifactRoot "dangerous_action_reauth_report.json"); requirePassed = $true },
     @{ name = "data_governance_egress_report"; path = (Join-Path $artifactRoot "data_governance_egress_report.json"); requirePassed = $true },
     @{ name = "incident_response_quarantine_report"; path = (Join-Path $artifactRoot "incident_response_quarantine_report.json"); requirePassed = $true },
+    @{ name = "forensic_reset_quarantine_drill_report"; path = (Join-Path $artifactRoot "forensic_reset_quarantine_drill_report.json"); requirePassed = $true },
     @{ name = "model_provider_trust_policy_report"; path = (Join-Path $artifactRoot "model_provider_trust_policy_report.json"); requirePassed = $true },
     @{ name = "relay_adversarial_regression_report"; path = (Join-Path $artifactRoot "relay_adversarial_regression_report.json"); requirePassed = $true },
     @{ name = "relay_adversarial_corpus_report"; path = (Join-Path $artifactRoot "relay_adversarial_corpus_report.json"); requirePassed = $true },
+    @{ name = "relay_attack_corpus_maintenance_report"; path = (Join-Path $artifactRoot "relay_attack_corpus_maintenance_report.json"); requirePassed = $true },
     @{ name = "boot_host_integrity_report"; path = (Join-Path $artifactRoot "boot_host_integrity_report.json"); requirePassed = $true },
     @{ name = "artifact_supply_chain_integrity_report"; path = (Join-Path $artifactRoot "artifact_supply_chain_integrity_report.json"); requirePassed = $true },
     @{ name = "runtime_update_chain_integrity_report"; path = (Join-Path $artifactRoot "runtime_update_chain_integrity_report.json"); requirePassed = $true },
     @{ name = "release_candidate_secret_leak_report"; path = (Join-Path $artifactRoot "release_candidate_secret_leak_report.json"); requirePassed = $true },
+    @{ name = "relay_green_regression_suite_report"; path = (Join-Path $artifactRoot "relay_green_regression_suite_report.json"); requirePassed = $true },
     @{ name = "linux_integrity_enforcement_report"; path = (Join-Path $artifactRoot "linux_integrity_enforcement_report.json"); requirePassed = $true },
     @{ name = "telemetry_split_redaction_report"; path = (Join-Path $artifactRoot "telemetry_split_redaction_report.json"); requirePassed = $true },
     @{ name = "broker_audit_events"; path = (Join-Path $artifactRoot "broker_audit_events.json"); requirePassed = $false },

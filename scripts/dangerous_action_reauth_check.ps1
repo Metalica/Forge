@@ -69,8 +69,15 @@ $report = [PSCustomObject]@{
     required_actions = @(
         "secret_export",
         "runtime_import",
-        "trust_policy_change"
+        "trust_policy_change",
+        "forensic_reset_bypass"
     )
+    action_coverage = [PSCustomObject]@{
+        secret_export = "runtime_secure_backup_import_reauth_and_typed_confirmation"
+        runtime_import = "runtime_secure_backup_import_reauth_and_typed_confirmation"
+        trust_policy_change = "policy_integrity_drift_reauth_dual_control"
+        forensic_reset_bypass = "runtime_secure_backup_import_reauth_and_typed_confirmation"
+    }
     preferred_phishing_resistant_auth_env = "FORGE_REQUIRE_PHISHING_RESISTANT_AUTH"
     passed = ($findings.Count -eq 0)
     checks = $results

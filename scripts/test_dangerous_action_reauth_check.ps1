@@ -19,6 +19,13 @@ try {
     if ($parsed.check -ne "dangerous_action_reauth_check") {
         throw "Unexpected check id in dangerous-action re-auth report."
     }
+    $requiredActions = @($parsed.required_actions | ForEach-Object { [string]$_ })
+    if ($requiredActions -notcontains "forensic_reset_bypass") {
+        throw "dangerous-action re-auth report is missing forensic_reset_bypass required action."
+    }
+    if ($null -eq $parsed.action_coverage -or [string]::IsNullOrWhiteSpace([string]$parsed.action_coverage.forensic_reset_bypass)) {
+        throw "dangerous-action re-auth report is missing forensic_reset_bypass action coverage mapping."
+    }
 
     Write-Host "dangerous_action_reauth_check.ps1 self-test passed."
 }
