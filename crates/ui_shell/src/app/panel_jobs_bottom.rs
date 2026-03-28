@@ -162,33 +162,33 @@ fn jobs_panel(
     let cancel_target = guarded_ui_action("jobs.cancel_target", Some(jobs_status), cancel_target);
     let apply_filter = guarded_ui_action("jobs.apply_filter", Some(jobs_status), apply_filter);
 
-    v_stack((
-        label(|| "Jobs"),
-        h_stack((
-            button("Enqueue").action(enqueue_job),
-            button("Run Next").action(run_next),
-            button("Complete Running").action(complete_running),
-            button("Fail Running").action(fail_running),
+    Stack::vertical((
+        Label::derived(|| "Jobs"),
+        Stack::horizontal((
+            Button::new("Enqueue").action(enqueue_job),
+            Button::new("Run Next").action(run_next),
+            Button::new("Complete Running").action(complete_running),
+            Button::new("Fail Running").action(fail_running),
         ))
         .style(|s| s.gap(8.0)),
-        h_stack((
-            label(|| "Cancel ID"),
-            text_input(jobs_target_id).style(|s| s.min_width(120.0).padding(6.0).color(theme::input_text())),
-            button("Cancel").action(cancel_target),
-            label(|| "Filter"),
-            text_input(jobs_filter).style(|s| s.min_width(140.0).padding(6.0).color(theme::input_text())),
-            button("Apply Filter").action(apply_filter),
+        Stack::horizontal((
+            Label::derived(|| "Cancel ID"),
+            TextInput::new(jobs_target_id).style(|s| s.min_width(120.0).padding(6.0).color(theme::input_text())),
+            Button::new("Cancel").action(cancel_target),
+            Label::derived(|| "Filter"),
+            TextInput::new(jobs_filter).style(|s| s.min_width(140.0).padding(6.0).color(theme::input_text())),
+            Button::new("Apply Filter").action(apply_filter),
         ))
         .style(|s| s.gap(8.0)),
-        h_stack((
-            label(move || format!("queued: {}", queued_jobs.get())),
-            label(move || format!("running: {}", running_jobs.get())),
-            label(move || format!("completed: {}", completed_jobs.get())),
-            label(move || format!("failed: {}", failed_jobs.get())),
-            label(move || format!("cancelled: {}", cancelled_jobs.get())),
+        Stack::horizontal((
+            Label::derived(move || format!("queued: {}", queued_jobs.get())),
+            Label::derived(move || format!("running: {}", running_jobs.get())),
+            Label::derived(move || format!("completed: {}", completed_jobs.get())),
+            Label::derived(move || format!("failed: {}", failed_jobs.get())),
+            Label::derived(move || format!("cancelled: {}", cancelled_jobs.get())),
         ))
         .style(|s| s.gap(12.0).color(theme::text_secondary())),
-        label({
+        Label::derived({
             let queue = queue.clone();
             move || {
                 let _ = (
@@ -208,9 +208,9 @@ fn jobs_panel(
             }
         })
         .style(|s| s.color(theme::text_secondary())),
-        label(move || format!("Status: {}", jobs_status.get()))
+        Label::derived(move || format!("Status: {}", jobs_status.get()))
             .style(|s| s.color(theme::text_secondary())),
-        scroll(label({
+        Scroll::new(Label::derived({
             let queue = queue.clone();
             move || {
                 let _ = (
@@ -456,35 +456,35 @@ fn bottom_panel(
         apply_filter,
     );
 
-    v_stack((
-        label(|| "Bottom Stack: Terminal | Logs | Jobs"),
-        h_stack((
-            button("Enqueue").action(enqueue_job),
-            button("Run Next").action(run_next),
-            button("Complete").action(complete_running),
-            button("Fail").action(fail_running),
+    Stack::vertical((
+        Label::derived(|| "Bottom Stack: Terminal | Logs | Jobs"),
+        Stack::horizontal((
+            Button::new("Enqueue").action(enqueue_job),
+            Button::new("Run Next").action(run_next),
+            Button::new("Complete").action(complete_running),
+            Button::new("Fail").action(fail_running),
         ))
         .style(|s| s.gap(8.0)),
-        h_stack((
-            label(|| "Target ID"),
-            text_input(jobs_target_id).style(|s| s.min_width(90.0).padding(6.0).color(theme::input_text())),
-            button("Cancel ID").action(cancel_target),
-            label(|| "Filter"),
-            text_input(jobs_filter).style(|s| s.min_width(120.0).padding(6.0).color(theme::input_text())),
-            button("Apply Filter").action(apply_filter),
+        Stack::horizontal((
+            Label::derived(|| "Target ID"),
+            TextInput::new(jobs_target_id).style(|s| s.min_width(90.0).padding(6.0).color(theme::input_text())),
+            Button::new("Cancel ID").action(cancel_target),
+            Label::derived(|| "Filter"),
+            TextInput::new(jobs_filter).style(|s| s.min_width(120.0).padding(6.0).color(theme::input_text())),
+            Button::new("Apply Filter").action(apply_filter),
         ))
         .style(|s| s.gap(8.0)),
-        h_stack((
-            label(move || format!("queued: {}", queued_jobs.get())),
-            label(move || format!("running: {}", running_jobs.get())),
-            label(move || format!("completed: {}", completed_jobs.get())),
-            label(move || format!("failed: {}", failed_jobs.get())),
-            label(move || format!("cancelled: {}", cancelled_jobs.get())),
+        Stack::horizontal((
+            Label::derived(move || format!("queued: {}", queued_jobs.get())),
+            Label::derived(move || format!("running: {}", running_jobs.get())),
+            Label::derived(move || format!("completed: {}", completed_jobs.get())),
+            Label::derived(move || format!("failed: {}", failed_jobs.get())),
+            Label::derived(move || format!("cancelled: {}", cancelled_jobs.get())),
         ))
         .style(|s| s.gap(12.0).color(theme::text_secondary())),
-        label(move || format!("Jobs Status: {}", jobs_status.get()))
+        Label::derived(move || format!("Jobs Status: {}", jobs_status.get()))
             .style(|s| s.color(theme::text_secondary())),
-        label({
+        Label::derived({
             let queue = queue.clone();
             move || {
                 let _ = (
@@ -503,7 +503,7 @@ fn bottom_panel(
                 }
             }
         }),
-        scroll(label({
+        Scroll::new(Label::derived({
             let queue = queue.clone();
             move || {
                 let _ = (
@@ -616,3 +616,4 @@ fn job_record_matches_filter(record: &JobRecord, normalized_filter: &str) -> boo
         _ => true,
     }
 }
+

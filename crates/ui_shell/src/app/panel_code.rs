@@ -793,82 +793,82 @@ fn code_studio_panel(
     let send_stream_input =
         guarded_ui_action("code.send_stream_input", Some(code_queue_status), send_stream_input);
 
-    v_stack((
-        label(|| "Code Studio"),
-        h_stack((
-            label(|| "Editor"),
-            text_input(code_editor_path).style(|s| s.min_width(260.0).padding(6.0).color(theme::input_text())),
-            button("Load").action(load_editor_file),
-            button("Refresh Files").action(refresh_files),
+    Stack::vertical((
+        Label::derived(|| "Code Studio"),
+        Stack::horizontal((
+            Label::derived(|| "Editor"),
+            TextInput::new(code_editor_path).style(|s| s.min_width(260.0).padding(6.0).color(theme::input_text())),
+            Button::new("Load").action(load_editor_file),
+            Button::new("Refresh Files").action(refresh_files),
         ))
         .style(|s| s.gap(8.0)),
-        h_stack((
-            label(|| "Append line"),
-            text_input(code_editor_append).style(|s| s.min_width(260.0).padding(6.0).color(theme::input_text())),
-            button("Append + Save").action(append_editor_line),
+        Stack::horizontal((
+            Label::derived(|| "Append line"),
+            TextInput::new(code_editor_append).style(|s| s.min_width(260.0).padding(6.0).color(theme::input_text())),
+            Button::new("Append + Save").action(append_editor_line),
         ))
         .style(|s| s.gap(8.0)),
-        scroll(label(move || code_editor_preview.get())).style(|s| {
+        Scroll::new(Label::derived(move || code_editor_preview.get())).style(|s| {
             s.width_full()
                 .height(160.0)
                 .padding(6.0)
                 .background(theme::surface_1())
         }),
-        h_stack((
-            label(|| "Search"),
-            text_input(code_search_query).style(|s| s.min_width(220.0).padding(6.0).color(theme::input_text())),
-            button("Run Search").action(run_search),
-            button("Refresh Git").action(refresh_git),
+        Stack::horizontal((
+            Label::derived(|| "Search"),
+            TextInput::new(code_search_query).style(|s| s.min_width(220.0).padding(6.0).color(theme::input_text())),
+            Button::new("Run Search").action(run_search),
+            Button::new("Refresh Git").action(refresh_git),
         ))
         .style(|s| s.gap(8.0)),
-        scroll(label(move || code_search_results.get())).style(|s| {
+        Scroll::new(Label::derived(move || code_search_results.get())).style(|s| {
             s.width_full()
                 .height(100.0)
                 .padding(6.0)
                 .background(theme::surface_1())
         }),
-        h_stack((
-            label(|| "Terminal"),
-            text_input(code_terminal_command).style(|s| s.min_width(220.0).padding(6.0).color(theme::input_text())),
-            button("Run Once").action(run_terminal_once),
-            button("Start Stream").action(start_stream),
-            button("Poll Stream").action(poll_stream),
-            button("Stop Stream").action(stop_stream),
-            button("Clear Stream").action(clear_stream),
+        Stack::horizontal((
+            Label::derived(|| "Terminal"),
+            TextInput::new(code_terminal_command).style(|s| s.min_width(220.0).padding(6.0).color(theme::input_text())),
+            Button::new("Run Once").action(run_terminal_once),
+            Button::new("Start Stream").action(start_stream),
+            Button::new("Poll Stream").action(poll_stream),
+            Button::new("Stop Stream").action(stop_stream),
+            Button::new("Clear Stream").action(clear_stream),
         ))
         .style(|s| s.gap(8.0)),
-        h_stack((
-            label(|| "Session Input"),
-            text_input(code_terminal_stdin).style(|s| s.min_width(260.0).padding(6.0).color(theme::input_text())),
-            button("Send Input").action(send_stream_input),
+        Stack::horizontal((
+            Label::derived(|| "Session Input"),
+            TextInput::new(code_terminal_stdin).style(|s| s.min_width(260.0).padding(6.0).color(theme::input_text())),
+            Button::new("Send Input").action(send_stream_input),
         ))
         .style(|s| s.gap(8.0)),
-        label(move || format!("Terminal session: {}", code_terminal_session_state.get()))
+        Label::derived(move || format!("Terminal session: {}", code_terminal_session_state.get()))
             .style(|s| s.color(theme::text_secondary())),
-        label(move || format!("Queue status: {}", code_queue_status.get()))
+        Label::derived(move || format!("Queue status: {}", code_queue_status.get()))
             .style(|s| s.color(theme::text_secondary())),
-        scroll(label(move || code_git_summary.get())).style(|s| {
+        Scroll::new(Label::derived(move || code_git_summary.get())).style(|s| {
             s.width_full()
                 .height(80.0)
                 .padding(6.0)
                 .background(theme::surface_1())
                 .color(theme::text_secondary())
         }),
-        scroll(label(move || code_terminal_output.get())).style(|s| {
+        Scroll::new(Label::derived(move || code_terminal_output.get())).style(|s| {
             s.width_full()
                 .height(90.0)
                 .padding(6.0)
                 .background(theme::surface_1())
                 .color(theme::text_secondary())
         }),
-        scroll(label(move || code_terminal_stream_output.get())).style(|s| {
+        Scroll::new(Label::derived(move || code_terminal_stream_output.get())).style(|s| {
             s.width_full()
                 .height(120.0)
                 .padding(6.0)
                 .background(theme::surface_1())
                 .color(theme::text_secondary())
         }),
-        scroll(label(move || code_file_list.get())).style(|s| {
+        Scroll::new(Label::derived(move || code_file_list.get())).style(|s| {
             s.width_full()
                 .height(110.0)
                 .padding(6.0)
@@ -877,4 +877,5 @@ fn code_studio_panel(
     ))
     .style(|s| s.size_full().padding(12.0).row_gap(8.0))
 }
+
 

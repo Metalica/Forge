@@ -7,8 +7,22 @@ fn settings_panel(
     feature_fallback_visible: RwSignal<bool>,
     feature_policy_snapshot: RwSignal<String>,
     runtimes: Rc<RefCell<RuntimeRegistry>>,
+    runtime_profile_status: RwSignal<String>,
+    runtime_version: RwSignal<String>,
+    runtime_health: RwSignal<String>,
+    runtime_process_state: RwSignal<String>,
+    runtime_process_pid: RwSignal<String>,
+    runtime_processes: Rc<RefCell<RuntimeProcessManager>>,
     runtime_vulkan_memory_status: RwSignal<String>,
     runtime_vulkan_validation_status: RwSignal<String>,
+    llama_model_path: RwSignal<String>,
+    llama_host: RwSignal<String>,
+    llama_port: RwSignal<String>,
+    llama_ctx_size: RwSignal<String>,
+    llama_threads: RwSignal<String>,
+    llama_gpu_layers: RwSignal<String>,
+    llama_batch_size: RwSignal<String>,
+    settings_category: RwSignal<SettingsCategory>,
 ) -> impl IntoView {
     let topology_placement_status = {
         let registry_ref = feature_registry.borrow();
@@ -1171,226 +1185,263 @@ fn settings_panel(
         }
     };
 
-    v_stack((
-        label(|| "Feature policy states: Disabled / Available / Enabled / Auto / Fallback"),
-        v_stack((
-            label(|| "Topology placement mode"),
-            h_stack((
-                button("Topology Enable")
-                    .action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_topology_state(FeatureState::Enabled, "enabled"))),
-                button("Topology Auto").action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_topology_state(FeatureState::Auto, "auto"))),
-                button("Topology Disable")
-                    .action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_topology_state(FeatureState::Disabled, "disabled"))),
-            ))
-            .style(|s| s.gap(8.0)),
-            label(move || format!("Placement status: {}", topology_placement_status.get()))
-                .style(|s| s.color(theme::text_secondary())),
-        ))
-        .style(|s| s.row_gap(8.0)),
-        v_stack((
-            label(|| "OpenVINO mode"),
-            h_stack((
-                button("OpenVINO Enable")
-                    .action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_openvino_state(FeatureState::Enabled, "enabled"))),
-                button("OpenVINO Auto").action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_openvino_state(FeatureState::Auto, "auto"))),
-                button("OpenVINO Disable")
-                    .action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_openvino_state(FeatureState::Disabled, "disabled"))),
-            ))
-            .style(|s| s.gap(8.0)),
-            label(move || format!("OpenVINO status: {}", openvino_status.get()))
-                .style(|s| s.color(theme::text_secondary())),
-        ))
-        .style(|s| s.row_gap(8.0)),
-        v_stack((
-            label(|| "Linux memory tuning profile (THP + zswap + zram)"),
-            h_stack((
-                button("Memory Enable").action(guarded_ui_action(
+    let apply_vulkan_memory_state = |target_state: FeatureState, label: &'static str| {
+        let feature_registry = feature_registry.clone();
+        let runtimes = runtimes.clone();
+        move || {
+            let mut registry_mut = feature_registry.borrow_mut();
+            let result = registry_mut.set_requested_state(FeatureId::VulkanMemoryAllocator, target_state);
+            if let Err(error) = result {
+                feature_policy_status.set(format!("vulkan memory update failed: {error:?}"));
+                return;
+            }
+            evaluate_registry_with_default_checks(&mut registry_mut);
+            if matches!(target_state, FeatureState::Disabled) {
+                llama_gpu_layers.set(String::from("0"));
+            }
+            let status = registry_mut.status(FeatureId::VulkanMemoryAllocator);
+            let summary = match status {
+                Some(value) => format!(
+                    "vulkan memory {label}: requested={:?} effective={:?} ({})",
+                    value.requested_state,
+                    value.effective_state,
+                    clip_text(&value.reason, 90)
+                ),
+                None => String::from("vulkan memory status unavailable"),
+            };
+            feature_policy_status.set(summary);
+            feature_policy_snapshot.set(format_feature_policy_snapshot(
+                &registry_mut,
+                feature_fallback_visible.get(),
+            ));
+            let runtime_registry_ref = runtimes.borrow();
+            sync_runtime_vulkan_card_status(
+                &runtime_registry_ref,
+                &registry_mut,
+                runtime_vulkan_memory_status,
+                runtime_vulkan_validation_status,
+            );
+        }
+    };
+
+    let refresh_vulkan_policy_gate = {
+        let feature_registry = feature_registry.clone();
+        let runtimes = runtimes.clone();
+        move || {
+            let mut registry_mut = feature_registry.borrow_mut();
+            let runtime_registry_ref = runtimes.borrow();
+            let gate_note =
+                apply_vulkan_benchmark_gate_from_registry(&runtime_registry_ref, &mut registry_mut);
+            let status = registry_mut.status(FeatureId::VulkanMemoryAllocator);
+            let summary = match status {
+                Some(value) => format!(
+                    "vulkan update: requested={:?} effective={:?} ({}) | gate={}",
+                    value.requested_state,
+                    value.effective_state,
+                    clip_text(&value.reason, 90),
+                    clip_text(&gate_note, 90)
+                ),
+                None => String::from("vulkan update: status unavailable"),
+            };
+            feature_policy_status.set(summary);
+            feature_policy_snapshot.set(format_feature_policy_snapshot(
+                &registry_mut,
+                feature_fallback_visible.get(),
+            ));
+            sync_runtime_vulkan_card_status(
+                &runtime_registry_ref,
+                &registry_mut,
+                runtime_vulkan_memory_status,
+                runtime_vulkan_validation_status,
+            );
+        }
+    };
+
+    let update_llama_runtime_action = {
+        let runtimes = runtimes.clone();
+        let feature_registry = feature_registry.clone();
+        move || {
+            let mut runtime_registry = runtimes.borrow_mut();
+            let update_note = match runtime_registry.update_version("llama.cpp", "0.1.0-phase1") {
+                UpdateResult::Updated => {
+                    let _ = runtime_registry.set_health("llama.cpp", RuntimeHealth::Unknown);
+                    String::from("llama.cpp metadata updated")
+                }
+                UpdateResult::AlreadyCurrent => String::from("llama.cpp metadata already current"),
+                UpdateResult::BlockedByPin => String::from("llama.cpp update blocked by pin"),
+                UpdateResult::RuntimeNotFound => String::from("llama.cpp runtime missing"),
+            };
+            sync_runtime_metrics(&runtime_registry, runtime_version, runtime_health);
+            let registry_ref = feature_registry.borrow();
+            sync_runtime_vulkan_card_status(
+                &runtime_registry,
+                &registry_ref,
+                runtime_vulkan_memory_status,
+                runtime_vulkan_validation_status,
+            );
+            drop(runtime_registry);
+            persist_runtime_registry_with_notice(&runtimes, runtime_profile_status);
+            runtime_profile_status.set(update_note);
+        }
+    };
+
+    let start_llama_runtime_action = {
+        let runtimes = runtimes.clone();
+        let runtime_processes = runtime_processes.clone();
+        let feature_registry = feature_registry.clone();
+        move || {
+            let vma_active = {
+                let registry = feature_registry.borrow();
+                registry
+                    .status(FeatureId::VulkanMemoryAllocator)
+                    .map(|status| matches!(status.effective_state, FeatureState::Enabled))
+                    .unwrap_or(false)
+            };
+            let configured_gpu_layers = llama_gpu_layers
+                .get()
+                .trim()
+                .parse::<u16>()
+                .ok()
+                .unwrap_or(0);
+            if configured_gpu_layers > 0 && !vma_active {
+                llama_gpu_layers.set(String::from("0"));
+                runtime_profile_status
+                    .set(String::from("llama.cpp start forced gpu-layers=0 (vulkan inactive)"));
+            }
+            let launch_request = {
+                let runtime_registry = runtimes.borrow();
+                if let Some(entry) = runtime_registry.get("llama.cpp") {
+                    build_launch_request(
+                        entry,
+                        llama_model_path.get().as_str(),
+                        llama_host.get().as_str(),
+                        llama_port.get().as_str(),
+                        llama_ctx_size.get().as_str(),
+                        llama_threads.get().as_str(),
+                        llama_gpu_layers.get().as_str(),
+                        llama_batch_size.get().as_str(),
+                    )
+                } else {
+                    Err(String::from("runtime llama.cpp not found"))
+                }
+            };
+            match launch_request {
+                Ok(request) => {
+                    let mut process_manager = runtime_processes.borrow_mut();
+                    let start_result = process_manager.start("llama.cpp", &request);
+                    let mut runtime_registry = runtimes.borrow_mut();
+                    sync_runtime_process_signals(
+                        &mut process_manager,
+                        &mut runtime_registry,
+                        runtime_process_state,
+                        runtime_process_pid,
+                        runtime_version,
+                        runtime_health,
+                        feature_registry.clone(),
+                        feature_policy_status,
+                        feature_fallback_visible,
+                        feature_policy_snapshot,
+                        runtime_vulkan_memory_status,
+                        runtime_vulkan_validation_status,
+                    );
+                    runtime_profile_status.set(match start_result {
+                        StartResult::Started | StartResult::AlreadyRunning => {
+                            String::from("llama.cpp runtime start requested")
+                        }
+                        StartResult::LaunchFailed => {
+                            String::from("llama.cpp runtime launch failed (check process state)")
+                        }
+                    });
+                    drop(runtime_registry);
+                    persist_runtime_registry_with_notice(&runtimes, runtime_profile_status);
+                }
+                Err(error) => {
+                    runtime_process_state.set(String::from("launch aborted"));
+                    runtime_profile_status.set(format!("llama.cpp profile invalid: {error}"));
+                }
+            }
+        }
+    };
+
+    let stop_llama_runtime_action = {
+        let runtimes = runtimes.clone();
+        let runtime_processes = runtime_processes.clone();
+        let feature_registry = feature_registry.clone();
+        move || {
+            let mut process_manager = runtime_processes.borrow_mut();
+            let stop_result = process_manager.stop("llama.cpp");
+            let mut runtime_registry = runtimes.borrow_mut();
+            sync_runtime_process_signals(
+                &mut process_manager,
+                &mut runtime_registry,
+                runtime_process_state,
+                runtime_process_pid,
+                runtime_version,
+                runtime_health,
+                feature_registry.clone(),
+                feature_policy_status,
+                feature_fallback_visible,
+                feature_policy_snapshot,
+                runtime_vulkan_memory_status,
+                runtime_vulkan_validation_status,
+            );
+            runtime_profile_status.set(match stop_result {
+                StopResult::Stopped => String::from("llama.cpp runtime stop requested"),
+                StopResult::NotRunning => String::from("llama.cpp runtime already stopped"),
+                StopResult::UnknownRuntime => String::from("llama.cpp runtime missing"),
+            });
+            drop(runtime_registry);
+            persist_runtime_registry_with_notice(&runtimes, runtime_profile_status);
+        }
+    };
+
+    let general_section = Stack::vertical((
+        Label::derived(|| "General"),
+        Stack::vertical((
+            Label::derived(|| "Topology placement mode"),
+            Stack::horizontal((
+                Button::new("Topology Enable").action(guarded_ui_action(
                     "settings.action",
                     Some(feature_policy_status),
-                    apply_linux_memory_tuning_state(FeatureState::Enabled, "enabled"),
+                    apply_topology_state(FeatureState::Enabled, "enabled"),
                 )),
-                button("Memory Auto")
-                    .action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_linux_memory_tuning_state(FeatureState::Auto, "auto"))),
-                button("Memory Disable").action(guarded_ui_action(
+                Button::new("Topology Auto").action(guarded_ui_action(
                     "settings.action",
                     Some(feature_policy_status),
-                    apply_linux_memory_tuning_state(FeatureState::Disabled, "disabled"),
+                    apply_topology_state(FeatureState::Auto, "auto"),
+                )),
+                Button::new("Topology Disable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_topology_state(FeatureState::Disabled, "disabled"),
                 )),
             ))
             .style(|s| s.gap(8.0)),
-            label(move || format!("Linux memory status: {}", linux_memory_tuning_status.get()))
-                .style(|s| s.color(theme::text_secondary())),
-            label(move || format!("Readiness: {}", gate_readiness.get()))
+            Label::derived(move || format!("Placement status: {}", topology_placement_status.get()))
                 .style(|s| s.color(theme::text_secondary())),
         ))
         .style(|s| s.row_gap(8.0)),
-        v_stack((
-            label(|| "Dense math backend profile (OpenBLAS + BLIS)"),
-            h_stack((
-                button("Dense Math Enable")
-                    .action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_dense_math_state(FeatureState::Enabled, "enabled"))),
-                button("Dense Math Auto")
-                    .action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_dense_math_state(FeatureState::Auto, "auto"))),
-                button("Dense Math Disable")
-                    .action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_dense_math_state(FeatureState::Disabled, "disabled"))),
-            ))
-            .style(|s| s.gap(8.0)),
-            label(move || format!("Dense math status: {}", dense_math_status.get()))
-                .style(|s| s.color(theme::text_secondary())),
-            label(|| "Allocator mode (mimalloc + jemalloc + snmalloc)"),
-            h_stack((
-                button("Allocator Enable")
-                    .action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_allocator_mode_state(FeatureState::Enabled, "enabled"))),
-                button("Allocator Auto")
-                    .action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_allocator_mode_state(FeatureState::Auto, "auto"))),
-                button("Allocator Disable").action(guarded_ui_action(
-                    "settings.action",
-                    Some(feature_policy_status),
-                    apply_allocator_mode_state(FeatureState::Disabled, "disabled"),
-                )),
-            ))
-            .style(|s| s.gap(8.0)),
-            label(move || format!("Allocator status: {}", allocator_mode_status.get()))
-                .style(|s| s.color(theme::text_secondary())),
-        ))
-        .style(|s| s.row_gap(8.0)),
-        v_stack((
-            label(|| "Profiling stack mode (perf + Tracy)"),
-            h_stack((
-                button("Profiling Enable")
-                    .action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_profiling_state(FeatureState::Enabled, "enabled"))),
-                button("Profiling Auto").action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_profiling_state(FeatureState::Auto, "auto"))),
-                button("Profiling Disable")
-                    .action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_profiling_state(FeatureState::Disabled, "disabled"))),
-            ))
-            .style(|s| s.gap(8.0)),
-            label(move || format!("Profiling status: {}", profiling_stack_status.get()))
-                .style(|s| s.color(theme::text_secondary())),
-        ))
-        .style(|s| s.row_gap(8.0)),
-        v_stack((
-            label(|| "Release optimization mode (AutoFDO + BOLT)"),
-            h_stack((
-                button("Release Opt Enable").action(guarded_ui_action(
-                    "settings.action",
-                    Some(feature_policy_status),
-                    apply_release_optimization_state(FeatureState::Enabled, "enabled"),
-                )),
-                button("Release Opt Auto")
-                    .action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_release_optimization_state(FeatureState::Auto, "auto"))),
-                button("Release Opt Disable").action(guarded_ui_action(
-                    "settings.action",
-                    Some(feature_policy_status),
-                    apply_release_optimization_state(FeatureState::Disabled, "disabled"),
-                )),
-            ))
-            .style(|s| s.gap(8.0)),
-            label(move || {
-                format!(
-                    "Release optimization status: {}",
-                    release_optimization_status.get()
-                )
-            })
-            .style(|s| s.color(theme::text_secondary())),
-        ))
-        .style(|s| s.row_gap(8.0)),
-        v_stack((
-            label(|| "Kernel vectorization mode (ISPC)"),
-            h_stack((
-                button("ISPC Enable").action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_ispc_state(FeatureState::Enabled, "enabled"))),
-                button("ISPC Auto").action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_ispc_state(FeatureState::Auto, "auto"))),
-                button("ISPC Disable").action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_ispc_state(FeatureState::Disabled, "disabled"))),
-            ))
-            .style(|s| s.gap(8.0)),
-            label(move || format!("ISPC status: {}", ispc_status.get()))
-                .style(|s| s.color(theme::text_secondary())),
-        ))
-        .style(|s| s.row_gap(8.0)),
-        v_stack((
-            label(|| "Portable SIMD mode (Highway)"),
-            h_stack((
-                button("Highway Enable")
-                    .action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_highway_state(FeatureState::Enabled, "enabled"))),
-                button("Highway Auto").action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_highway_state(FeatureState::Auto, "auto"))),
-                button("Highway Disable")
-                    .action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_highway_state(FeatureState::Disabled, "disabled"))),
-            ))
-            .style(|s| s.gap(8.0)),
-            label(move || format!("Highway status: {}", highway_status.get()))
-                .style(|s| s.color(theme::text_secondary())),
-        ))
-        .style(|s| s.row_gap(8.0)),
-        v_stack((
-            label(|| "Rust SIMD mode (std::arch)"),
-            h_stack((
-                button("Rust SIMD Enable")
-                    .action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_rust_arch_simd_state(FeatureState::Enabled, "enabled"))),
-                button("Rust SIMD Auto")
-                    .action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_rust_arch_simd_state(FeatureState::Auto, "auto"))),
-                button("Rust SIMD Disable").action(guarded_ui_action(
-                    "settings.action",
-                    Some(feature_policy_status),
-                    apply_rust_arch_simd_state(FeatureState::Disabled, "disabled"),
-                )),
-            ))
-            .style(|s| s.gap(8.0)),
-            label(move || format!("Rust SIMD status: {}", rust_arch_simd_status.get()))
-                .style(|s| s.color(theme::text_secondary())),
-            label(|| "Rust-native parallelism mode (Rayon)"),
-            h_stack((
-                button("Rayon Enable").action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_rayon_state(FeatureState::Enabled, "enabled"))),
-                button("Rayon Auto").action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_rayon_state(FeatureState::Auto, "auto"))),
-                button("Rayon Disable")
-                    .action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_rayon_state(FeatureState::Disabled, "disabled"))),
-            ))
-            .style(|s| s.gap(8.0)),
-            label(move || format!("Rayon status: {}", rayon_parallelism_status.get()))
-                .style(|s| s.color(theme::text_secondary())),
-            label(|| "Linux I/O mode (io_uring)"),
-            h_stack((
-                button("io_uring Enable")
-                    .action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_io_uring_state(FeatureState::Enabled, "enabled"))),
-                button("io_uring Auto").action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_io_uring_state(FeatureState::Auto, "auto"))),
-                button("io_uring Disable")
-                    .action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_io_uring_state(FeatureState::Disabled, "disabled"))),
-            ))
-            .style(|s| s.gap(8.0)),
-            label(move || format!("io_uring status: {}", io_uring_status.get()))
-                .style(|s| s.color(theme::text_secondary())),
-            label(|| "Metadata mode (LMDB)"),
-            h_stack((
-                button("LMDB Enable")
-                    .action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_lmdb_metadata_state(FeatureState::Enabled, "enabled"))),
-                button("LMDB Auto").action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_lmdb_metadata_state(FeatureState::Auto, "auto"))),
-                button("LMDB Disable").action(guarded_ui_action(
-                    "settings.action",
-                    Some(feature_policy_status),
-                    apply_lmdb_metadata_state(FeatureState::Disabled, "disabled"),
-                )),
-            ))
-            .style(|s| s.gap(8.0)),
-            label(move || format!("LMDB status: {}", lmdb_metadata_status.get()))
-                .style(|s| s.color(theme::text_secondary())),
-            label(|| "Confidential relay feature mode"),
-            h_stack((
-                button("Confidential Enable").action(guarded_ui_action(
+        Stack::vertical((
+            Label::derived(|| "Confidential relay feature mode"),
+            Stack::horizontal((
+                Button::new("Confidential Enable").action(guarded_ui_action(
                     "settings.action",
                     Some(feature_policy_status),
                     apply_confidential_relay_feature_state(FeatureState::Enabled, "enabled"),
                 )),
-                button("Confidential Auto").action(guarded_ui_action(
+                Button::new("Confidential Auto").action(guarded_ui_action(
                     "settings.action",
                     Some(feature_policy_status),
                     apply_confidential_relay_feature_state(FeatureState::Auto, "auto"),
                 )),
-                button("Confidential Disable").action(guarded_ui_action(
+                Button::new("Confidential Disable").action(guarded_ui_action(
                     "settings.action",
                     Some(feature_policy_status),
                     apply_confidential_relay_feature_state(FeatureState::Disabled, "disabled"),
                 )),
             ))
             .style(|s| s.gap(8.0)),
-            label(move || {
+            Label::derived(move || {
                 format!(
                     "Confidential feature status: {}",
                     confidential_relay_feature_status.get()
@@ -1399,58 +1450,590 @@ fn settings_panel(
             .style(|s| s.color(theme::text_secondary())),
         ))
         .style(|s| s.row_gap(8.0)),
-        v_stack((
-            label(|| "Benchmark Evidence Artifact"),
-            h_stack((
-                button("Run Gate Now").action(guarded_ui_action("settings.action", Some(feature_policy_status), run_gate_now_action)),
-                button("Load Gate Artifact").action(guarded_ui_action("settings.action", Some(feature_policy_status), load_gate_artifact_action)),
-                button("Apply Gate Defaults").action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_gate_defaults_action)),
-                button("Apply Recommended Flags").action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_recommended_flags_action)),
-                button("Clear Recommended Flags").action(guarded_ui_action("settings.action", Some(feature_policy_status), clear_recommended_flags_action)),
-                button("Show Env Commands").action(guarded_ui_action("settings.action", Some(feature_policy_status), show_gate_env_commands_action)),
-                button("Check Flag Parity").action(guarded_ui_action("settings.action", Some(feature_policy_status), check_flag_parity_action)),
+        Stack::vertical((
+            Button::new("Feature policy states")
+                .style(|s| s.padding_horiz(10.0).padding_vert(4.0).width(190.0)),
+            Stack::horizontal((
+                Button::new("Disabled").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_target_state(FeatureState::Disabled, "disabled"),
+                )),
+                Button::new("Available").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_target_state(FeatureState::Available, "available"),
+                )),
+                Button::new("Enabled").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_target_state(FeatureState::Enabled, "enabled"),
+                )),
+                Button::new("Auto").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_target_state(FeatureState::Auto, "auto"),
+                )),
+                Button::new("Fallback").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_target_state(FeatureState::Fallback, "fallback"),
+                )),
+            ))
+            .style(|s| s.gap(12.0)),
+            Stack::horizontal((
+                Label::derived(|| "Feature key").style(|s| s.color(theme::text_secondary())),
+                TextInput::new(feature_target)
+                    .style(|s| s.min_width(220.0).padding(6.0).color(theme::input_text())),
+                Button::new("Enable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_target_state(FeatureState::Enabled, "enabled"),
+                )),
+                Button::new("Disable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_target_state(FeatureState::Disabled, "disabled"),
+                )),
+                Button::new("Auto").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_target_state(FeatureState::Auto, "auto"),
+                )),
+                Button::new("Mark Fallback").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    mark_fallback,
+                )),
+                Button::new("Clear Fallback").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    clear_fallback,
+                )),
             ))
             .style(|s| s.gap(8.0)),
-            label(move || format!("Artifact path: {}", gate_artifact_path.get()))
+            Stack::horizontal((
+                Button::new("Toggle Fallback Visibility").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    toggle_fallback_visibility,
+                )),
+                Button::new("Reset Safe Defaults").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    reset_safe_defaults,
+                )),
+                Button::new("Save Preferences").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    save_preferences,
+                )),
+                Button::new("Reload Preferences").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    reload_preferences,
+                )),
+            ))
+            .style(|s| s.gap(8.0)),
+            Label::derived(|| {
+                format!(
+                    "Settings file: {}",
+                    feature_policy_settings_path().display()
+                )
+            })
+            .style(|s| s.color(theme::text_secondary())),
+        ))
+        .style(|s| {
+            s.row_gap(10.0)
+                .padding(12.0)
+                .background(theme::surface_2())
+                .border(1.0)
+        }),
+        Stack::vertical((
+            Label::derived(|| "Policy snapshot").style(|s| s.color(theme::text_secondary())),
+            Scroll::new(
+                Label::derived(move || feature_policy_snapshot.get())
+                    .style(|s| s.color(theme::text_secondary())),
+            )
+            .style(|s| {
+                s.width_full()
+                    .height(260.0)
+                    .padding(8.0)
+                    .background(theme::surface_1())
+            }),
+        ))
+        .style(|s| s.row_gap(8.0)),
+        Stack::vertical((
+            Label::derived(|| "Benchmark Evidence Artifact"),
+            Stack::horizontal((
+                Button::new("Run Gate Now").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    run_gate_now_action,
+                )),
+                Button::new("Load Gate Artifact").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    load_gate_artifact_action,
+                )),
+                Button::new("Apply Gate Defaults").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_gate_defaults_action,
+                )),
+                Button::new("Apply Recommended Flags").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_recommended_flags_action,
+                )),
+                Button::new("Clear Recommended Flags").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    clear_recommended_flags_action,
+                )),
+                Button::new("Show Env Commands").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    show_gate_env_commands_action,
+                )),
+                Button::new("Check Flag Parity").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    check_flag_parity_action,
+                )),
+            ))
+            .style(|s| s.gap(8.0)),
+            Label::derived(move || format!("Artifact path: {}", gate_artifact_path.get()))
                 .style(|s| s.color(theme::text_secondary())),
-            label(move || format!("Artifact status: {}", gate_artifact_status.get()))
+            Label::derived(move || format!("Artifact status: {}", gate_artifact_status.get()))
                 .style(|s| s.color(theme::text_secondary())),
-            label(move || format!("Flag parity: {}", flag_parity_status.get()))
+            Label::derived(move || format!("Flag parity: {}", flag_parity_status.get()))
                 .style(|s| s.color(theme::text_secondary())),
         ))
         .style(|s| s.row_gap(8.0)),
-        label(|| {
-            format!(
-                "Settings file: {}",
-                feature_policy_settings_path().display()
-            )
-        })
-        .style(|s| s.color(theme::text_secondary())),
-        h_stack((
-            label(|| "Feature key"),
-            text_input(feature_target).style(|s| s.min_width(220.0).padding(6.0).color(theme::input_text())),
-            button("Enable").action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_target_state(FeatureState::Enabled, "enabled"))),
-            button("Disable").action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_target_state(FeatureState::Disabled, "disabled"))),
-            button("Auto").action(guarded_ui_action("settings.action", Some(feature_policy_status), apply_target_state(FeatureState::Auto, "auto"))),
-            button("Mark Fallback").action(guarded_ui_action("settings.action", Some(feature_policy_status), mark_fallback)),
-            button("Clear Fallback").action(guarded_ui_action("settings.action", Some(feature_policy_status), clear_fallback)),
+    ))
+    .style(|s| s.row_gap(8.0).padding(8.0).background(theme::surface_1()));
+
+    let ui_section = Stack::vertical((
+        Label::derived(|| "UI"),
+        Stack::vertical((
+            Label::derived(|| "UI text color policy"),
+            Label::derived(|| "Button text color: black (global override active)")
+                .style(|s| s.color(theme::text_secondary())),
+            Label::derived(|| "Input text color: black (global override active)")
+                .style(|s| s.color(theme::text_secondary())),
+            Label::derived(|| "Use this category for upcoming UI-only controls.")
+                .style(|s| s.color(theme::text_secondary())),
         ))
-        .style(|s| s.gap(8.0)),
-        h_stack((
-            button("Toggle Fallback Visibility").action(guarded_ui_action("settings.action", Some(feature_policy_status), toggle_fallback_visibility)),
-            button("Reset Safe Defaults").action(guarded_ui_action("settings.action", Some(feature_policy_status), reset_safe_defaults)),
-            button("Save Preferences").action(guarded_ui_action("settings.action", Some(feature_policy_status), save_preferences)),
-            button("Reload Preferences").action(guarded_ui_action("settings.action", Some(feature_policy_status), reload_preferences)),
+        .style(|s| s.row_gap(8.0)),
+    ))
+    .style(|s| s.row_gap(8.0).padding(8.0).background(theme::surface_1()));
+
+    let windows_section = Stack::vertical((
+        Label::derived(|| "Windows").style(|s| s.color(theme::warning()).font_size(16.0)),
+        Stack::vertical((
+            Label::derived(|| "OpenVINO mode").style(|s| s.color(theme::warning())),
+            Stack::horizontal((
+                Button::new("OpenVINO Enable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_openvino_state(FeatureState::Enabled, "enabled"),
+                )),
+                Button::new("OpenVINO Auto").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_openvino_state(FeatureState::Auto, "auto"),
+                )),
+                Button::new("OpenVINO Disable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_openvino_state(FeatureState::Disabled, "disabled"),
+                )),
+            ))
+            .style(|s| s.gap(8.0)),
+            Label::derived(move || format!("OpenVINO status: {}", openvino_status.get()))
+                .style(|s| s.color(theme::warning())),
         ))
-        .style(|s| s.gap(8.0)),
-        label(move || format!("Policy status: {}", feature_policy_status.get()))
+        .style(|s| s.row_gap(8.0)),
+    ))
+    .style(|s| s.row_gap(12.0).padding(8.0).background(theme::surface_1()));
+
+    let linux_section = Stack::vertical((
+        Label::derived(|| "Linux"),
+        Stack::vertical((
+            Label::derived(|| "Linux memory tuning profile (THP + zswap + zram)"),
+            Stack::horizontal((
+                Button::new("Memory Enable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_linux_memory_tuning_state(FeatureState::Enabled, "enabled"),
+                )),
+                Button::new("Memory Auto").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_linux_memory_tuning_state(FeatureState::Auto, "auto"),
+                )),
+                Button::new("Memory Disable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_linux_memory_tuning_state(FeatureState::Disabled, "disabled"),
+                )),
+            ))
+            .style(|s| s.gap(8.0)),
+            Label::derived(move || format!("Linux memory status: {}", linux_memory_tuning_status.get()))
+                .style(|s| s.color(theme::text_secondary())),
+            Label::derived(move || format!("Readiness: {}", gate_readiness.get()))
+                .style(|s| s.color(theme::text_secondary())),
+        ))
+        .style(|s| s.row_gap(8.0)),
+        Stack::vertical((
+            Label::derived(|| "Linux I/O mode (io_uring)"),
+            Stack::horizontal((
+                Button::new("io_uring Enable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_io_uring_state(FeatureState::Enabled, "enabled"),
+                )),
+                Button::new("io_uring Auto").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_io_uring_state(FeatureState::Auto, "auto"),
+                )),
+                Button::new("io_uring Disable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_io_uring_state(FeatureState::Disabled, "disabled"),
+                )),
+            ))
+            .style(|s| s.gap(8.0)),
+            Label::derived(move || format!("io_uring status: {}", io_uring_status.get()))
+                .style(|s| s.color(theme::text_secondary())),
+        ))
+        .style(|s| s.row_gap(8.0)),
+    ))
+    .style(|s| s.row_gap(8.0).padding(8.0).background(theme::surface_1()));
+
+    let cpu_section = Stack::vertical((
+        Label::derived(|| "CPU"),
+        Stack::vertical((
+            Label::derived(|| "llama.cpp runtime controls"),
+            Stack::horizontal((
+                Button::new("Llama Start").action(guarded_ui_action(
+                    "settings.llama_start",
+                    Some(runtime_profile_status),
+                    start_llama_runtime_action,
+                )),
+                Button::new("Llama Stop").action(guarded_ui_action(
+                    "settings.llama_stop",
+                    Some(runtime_profile_status),
+                    stop_llama_runtime_action,
+                )),
+                Button::new("Llama Update").action(guarded_ui_action(
+                    "settings.llama_update",
+                    Some(runtime_profile_status),
+                    update_llama_runtime_action,
+                )),
+            ))
+            .style(|s| s.gap(8.0)),
+            Label::derived(move || format!("Runtime version: {}", runtime_version.get()))
+                .style(|s| s.color(theme::text_secondary())),
+            Label::derived(move || format!("Runtime health: {}", runtime_health.get()))
+                .style(|s| s.color(theme::text_secondary())),
+            Label::derived(move || format!("Runtime state: {}", runtime_process_state.get()))
+                .style(|s| s.color(theme::text_secondary())),
+            Label::derived(move || format!("Runtime pid: {}", runtime_process_pid.get()))
+                .style(|s| s.color(theme::text_secondary())),
+            Label::derived(move || format!("Runtime status: {}", runtime_profile_status.get()))
+                .style(|s| s.color(theme::text_secondary())),
+        ))
+        .style(|s| s.row_gap(8.0)),
+        Stack::vertical((
+            Label::derived(|| "Dense math backend profile (OpenBLAS + BLIS)"),
+            Stack::horizontal((
+                Button::new("Dense Math Enable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_dense_math_state(FeatureState::Enabled, "enabled"),
+                )),
+                Button::new("Dense Math Auto").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_dense_math_state(FeatureState::Auto, "auto"),
+                )),
+                Button::new("Dense Math Disable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_dense_math_state(FeatureState::Disabled, "disabled"),
+                )),
+            ))
+            .style(|s| s.gap(8.0)),
+            Label::derived(move || format!("Dense math status: {}", dense_math_status.get()))
+                .style(|s| s.color(theme::text_secondary())),
+            Label::derived(|| "Allocator mode (mimalloc + jemalloc + snmalloc)"),
+            Stack::horizontal((
+                Button::new("Allocator Enable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_allocator_mode_state(FeatureState::Enabled, "enabled"),
+                )),
+                Button::new("Allocator Auto").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_allocator_mode_state(FeatureState::Auto, "auto"),
+                )),
+                Button::new("Allocator Disable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_allocator_mode_state(FeatureState::Disabled, "disabled"),
+                )),
+            ))
+            .style(|s| s.gap(8.0)),
+            Label::derived(move || format!("Allocator status: {}", allocator_mode_status.get()))
+                .style(|s| s.color(theme::text_secondary())),
+        ))
+        .style(|s| s.row_gap(8.0)),
+        Stack::vertical((
+            Label::derived(|| "Profiling stack mode (perf + Tracy)"),
+            Stack::horizontal((
+                Button::new("Profiling Enable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_profiling_state(FeatureState::Enabled, "enabled"),
+                )),
+                Button::new("Profiling Auto").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_profiling_state(FeatureState::Auto, "auto"),
+                )),
+                Button::new("Profiling Disable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_profiling_state(FeatureState::Disabled, "disabled"),
+                )),
+            ))
+            .style(|s| s.gap(8.0)),
+            Label::derived(move || format!("Profiling status: {}", profiling_stack_status.get()))
+                .style(|s| s.color(theme::text_secondary())),
+        ))
+        .style(|s| s.row_gap(8.0)),
+        Stack::vertical((
+            Label::derived(|| "Release optimization mode (AutoFDO + BOLT)"),
+            Stack::horizontal((
+                Button::new("Release Opt Enable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_release_optimization_state(FeatureState::Enabled, "enabled"),
+                )),
+                Button::new("Release Opt Auto").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_release_optimization_state(FeatureState::Auto, "auto"),
+                )),
+                Button::new("Release Opt Disable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_release_optimization_state(FeatureState::Disabled, "disabled"),
+                )),
+            ))
+            .style(|s| s.gap(8.0)),
+            Label::derived(move || {
+                format!(
+                    "Release optimization status: {}",
+                    release_optimization_status.get()
+                )
+            })
             .style(|s| s.color(theme::text_secondary())),
-        scroll(label(move || feature_policy_snapshot.get())).style(|s| {
-            s.width_full()
-                .height_full()
-                .padding(8.0)
-                .background(theme::surface_1())
+        ))
+        .style(|s| s.row_gap(8.0)),
+        Stack::vertical((
+            Label::derived(|| "Kernel vectorization mode (ISPC)"),
+            Stack::horizontal((
+                Button::new("ISPC Enable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_ispc_state(FeatureState::Enabled, "enabled"),
+                )),
+                Button::new("ISPC Auto").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_ispc_state(FeatureState::Auto, "auto"),
+                )),
+                Button::new("ISPC Disable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_ispc_state(FeatureState::Disabled, "disabled"),
+                )),
+            ))
+            .style(|s| s.gap(8.0)),
+            Label::derived(move || format!("ISPC status: {}", ispc_status.get()))
+                .style(|s| s.color(theme::text_secondary())),
+        ))
+        .style(|s| s.row_gap(8.0)),
+        Stack::vertical((
+            Label::derived(|| "Portable SIMD mode (Highway)"),
+            Stack::horizontal((
+                Button::new("Highway Enable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_highway_state(FeatureState::Enabled, "enabled"),
+                )),
+                Button::new("Highway Auto").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_highway_state(FeatureState::Auto, "auto"),
+                )),
+                Button::new("Highway Disable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_highway_state(FeatureState::Disabled, "disabled"),
+                )),
+            ))
+            .style(|s| s.gap(8.0)),
+            Label::derived(move || format!("Highway status: {}", highway_status.get()))
+                .style(|s| s.color(theme::text_secondary())),
+        ))
+        .style(|s| s.row_gap(8.0)),
+        Stack::vertical((
+            Label::derived(|| "Rust SIMD mode (std::arch)"),
+            Stack::horizontal((
+                Button::new("Rust SIMD Enable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_rust_arch_simd_state(FeatureState::Enabled, "enabled"),
+                )),
+                Button::new("Rust SIMD Auto").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_rust_arch_simd_state(FeatureState::Auto, "auto"),
+                )),
+                Button::new("Rust SIMD Disable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_rust_arch_simd_state(FeatureState::Disabled, "disabled"),
+                )),
+            ))
+            .style(|s| s.gap(8.0)),
+            Label::derived(move || format!("Rust SIMD status: {}", rust_arch_simd_status.get()))
+                .style(|s| s.color(theme::text_secondary())),
+            Label::derived(|| "Rust-native parallelism mode (Rayon)"),
+            Stack::horizontal((
+                Button::new("Rayon Enable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_rayon_state(FeatureState::Enabled, "enabled"),
+                )),
+                Button::new("Rayon Auto").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_rayon_state(FeatureState::Auto, "auto"),
+                )),
+                Button::new("Rayon Disable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_rayon_state(FeatureState::Disabled, "disabled"),
+                )),
+            ))
+            .style(|s| s.gap(8.0)),
+            Label::derived(move || format!("Rayon status: {}", rayon_parallelism_status.get()))
+                .style(|s| s.color(theme::text_secondary())),
+        ))
+        .style(|s| s.row_gap(8.0)),
+        Stack::vertical((
+            Label::derived(|| "Metadata mode (LMDB)"),
+            Stack::horizontal((
+                Button::new("LMDB Enable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_lmdb_metadata_state(FeatureState::Enabled, "enabled"),
+                )),
+                Button::new("LMDB Auto").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_lmdb_metadata_state(FeatureState::Auto, "auto"),
+                )),
+                Button::new("LMDB Disable").action(guarded_ui_action(
+                    "settings.action",
+                    Some(feature_policy_status),
+                    apply_lmdb_metadata_state(FeatureState::Disabled, "disabled"),
+                )),
+            ))
+            .style(|s| s.gap(8.0)),
+            Label::derived(move || format!("LMDB status: {}", lmdb_metadata_status.get()))
+                .style(|s| s.color(theme::text_secondary())),
+        ))
+        .style(|s| s.row_gap(8.0)),
+    ))
+    .style(|s| s.row_gap(8.0).padding(8.0).background(theme::surface_1()));
+
+    let gpu_section = Stack::vertical((
+        Label::derived(|| "GPU"),
+        Stack::vertical((
+            Label::derived(|| "Vulkan llama.cpp policy"),
+            Stack::horizontal((
+                Button::new("Vulkan Enable").action(guarded_ui_action(
+                    "settings.vulkan_on",
+                    Some(feature_policy_status),
+                    apply_vulkan_memory_state(FeatureState::Enabled, "enabled"),
+                )),
+                Button::new("Vulkan Auto").action(guarded_ui_action(
+                    "settings.vulkan_auto",
+                    Some(feature_policy_status),
+                    apply_vulkan_memory_state(FeatureState::Auto, "auto"),
+                )),
+                Button::new("Vulkan Disable").action(guarded_ui_action(
+                    "settings.vulkan_off",
+                    Some(feature_policy_status),
+                    apply_vulkan_memory_state(FeatureState::Disabled, "disabled"),
+                )),
+                Button::new("Vulkan Update Gate").action(guarded_ui_action(
+                    "settings.vulkan_update",
+                    Some(feature_policy_status),
+                    refresh_vulkan_policy_gate,
+                )),
+            ))
+            .style(|s| s.gap(8.0)),
+            Label::derived(move || format!("Vulkan memory: {}", runtime_vulkan_memory_status.get()))
+                .style(|s| s.color(theme::text_secondary())),
+            Label::derived(move || format!("Vulkan validation: {}", runtime_vulkan_validation_status.get()))
+                .style(|s| s.color(theme::text_secondary())),
+        ))
+        .style(|s| s.row_gap(8.0)),
+    ))
+    .style(|s| s.row_gap(8.0).padding(8.0).background(theme::surface_1()));
+
+    Stack::vertical((
+        general_section.style(move |s| {
+            s.apply_if(settings_category.get() != SettingsCategory::General, |s| {
+                s.display(floem::taffy::style::Display::None)
+            })
         }),
+        ui_section.style(move |s| {
+            s.apply_if(settings_category.get() != SettingsCategory::Ui, |s| {
+                s.display(floem::taffy::style::Display::None)
+            })
+        }),
+        windows_section.style(move |s| {
+            s.apply_if(settings_category.get() != SettingsCategory::Windows, |s| {
+                s.display(floem::taffy::style::Display::None)
+            })
+        }),
+        linux_section.style(move |s| {
+            s.apply_if(settings_category.get() != SettingsCategory::Linux, |s| {
+                s.display(floem::taffy::style::Display::None)
+            })
+        }),
+        cpu_section.style(move |s| {
+            s.apply_if(settings_category.get() != SettingsCategory::Cpu, |s| {
+                s.display(floem::taffy::style::Display::None)
+            })
+        }),
+        gpu_section.style(move |s| {
+            s.apply_if(settings_category.get() != SettingsCategory::Gpu, |s| {
+                s.display(floem::taffy::style::Display::None)
+            })
+        }),
+        Label::derived(move || format!("Policy status: {}", feature_policy_status.get()))
+            .style(|s| s.color(theme::text_secondary())),
     ))
     .style(|s| s.size_full().row_gap(8.0))
 }

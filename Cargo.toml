@@ -46,5 +46,3 @@ allocator-mimalloc = ["x86_64-pc-windows-gnu"]
 allocator-jemalloc = ["x86_64-pc-windows-gnu", "x86_64-unknown-linux-gnu"]
 allocator-snmalloc = ["x86_64-pc-windows-gnu"]
 
-[patch.crates-io]
-metal = { path = "third_party/metal-0.29.0-patched" }

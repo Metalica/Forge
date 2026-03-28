@@ -527,11 +527,11 @@ fn model_studio_panel(
         reload_sources_action,
     );
 
-    v_stack((
-        label(|| "Model Studio"),
-        label(move || format!("llama.cpp version: {}", runtime_version.get())),
-        label(move || format!("runtime health: {}", runtime_health.get())),
-        label({
+    Stack::vertical((
+        Label::derived(|| "Model Studio"),
+        Label::derived(move || format!("llama.cpp version: {}", runtime_version.get())),
+        Label::derived(move || format!("runtime health: {}", runtime_health.get())),
+        Label::derived({
             let runtimes = runtimes.clone();
             move || {
                 match runtimes.try_borrow() {
@@ -544,7 +544,7 @@ fn model_studio_panel(
             }
         })
         .style(|s| s.color(theme::text_secondary())),
-        label({
+        Label::derived({
             let runtimes = runtimes.clone();
             move || {
                 match runtimes.try_borrow() {
@@ -557,7 +557,7 @@ fn model_studio_panel(
             }
         })
         .style(|s| s.color(theme::text_secondary())),
-        label({
+        Label::derived({
             let source_registry = source_registry.clone();
             move || {
                 match source_registry.try_borrow() {
@@ -570,7 +570,7 @@ fn model_studio_panel(
             }
         })
         .style(|s| s.color(theme::text_secondary())),
-        label({
+        Label::derived({
             let source_registry = source_registry.clone();
             move || {
                 match source_registry.try_borrow() {
@@ -587,53 +587,53 @@ fn model_studio_panel(
             }
         })
         .style(|s| s.color(theme::text_secondary())),
-        v_stack((
-            h_stack((
-                label(|| "Source ID"),
-                text_input(model_source_target).style(|s| s.min_width(320.0).padding(6.0).color(theme::input_text())),
-                label(|| "Role"),
-                text_input(model_source_role).style(|s| s.min_width(180.0).padding(6.0).color(theme::input_text())),
+        Stack::vertical((
+            Stack::horizontal((
+                Label::derived(|| "Source ID"),
+                TextInput::new(model_source_target).style(|s| s.min_width(320.0).padding(6.0).color(theme::input_text())),
+                Label::derived(|| "Role"),
+                TextInput::new(model_source_role).style(|s| s.min_width(180.0).padding(6.0).color(theme::input_text())),
             ))
             .style(|s| s.items_center().gap(6.0)),
-            h_stack((
-                label(|| "Verifier endpoint"),
-                text_input(model_confidential_verifier_endpoint)
+            Stack::horizontal((
+                Label::derived(|| "Verifier endpoint"),
+                TextInput::new(model_confidential_verifier_endpoint)
                     .style(|s| s.min_width(360.0).padding(6.0).color(theme::input_text())),
             ))
             .style(|s| s.items_center().gap(6.0)),
-            h_stack((
-                label(|| "Expected provider"),
-                text_input(model_confidential_expected_provider)
+            Stack::horizontal((
+                Label::derived(|| "Expected provider"),
+                TextInput::new(model_confidential_expected_provider)
                     .style(|s| s.min_width(240.0).padding(6.0).color(theme::input_text())),
-                label(|| "Measurement prefixes"),
-                text_input(model_confidential_measurement_prefixes)
+                Label::derived(|| "Measurement prefixes"),
+                TextInput::new(model_confidential_measurement_prefixes)
                     .style(|s| s.min_width(320.0).padding(6.0).color(theme::input_text())),
             ))
             .style(|s| s.items_center().gap(6.0)),
-            h_stack((
-                label(|| "Verifier timeout-ms"),
-                text_input(model_confidential_timeout_ms)
+            Stack::horizontal((
+                Label::derived(|| "Verifier timeout-ms"),
+                TextInput::new(model_confidential_timeout_ms)
                     .style(|s| s.min_width(120.0).padding(6.0).color(theme::input_text())),
-                label(|| "API key env var"),
-                text_input(model_confidential_api_key_env_var)
+                Label::derived(|| "API key env var"),
+                TextInput::new(model_confidential_api_key_env_var)
                     .style(|s| s.min_width(220.0).padding(6.0).color(theme::input_text())),
             ))
             .style(|s| s.items_center().gap(6.0)),
-            h_stack((
-                button("Enable Source").action(enable_source_action),
-                button("Disable Source").action(disable_source_action),
-                button("Set Role Default").action(set_role_default_action),
-                button("Confidential Configure").action(configure_confidential_source_action),
-                button("Confidential On").action(enable_confidential_source_action),
-                button("Confidential Off").action(disable_confidential_source_action),
-                button("Reset Sources").action(reset_sources_action),
-                button("Reload Sources").action(reload_sources_action),
+            Stack::horizontal((
+                Button::new("Enable Source").action(enable_source_action),
+                Button::new("Disable Source").action(disable_source_action),
+                Button::new("Set Role Default").action(set_role_default_action),
+                Button::new("Confidential Configure").action(configure_confidential_source_action),
+                Button::new("Confidential On").action(enable_confidential_source_action),
+                Button::new("Confidential Off").action(disable_confidential_source_action),
+                Button::new("Reset Sources").action(reset_sources_action),
+                Button::new("Reload Sources").action(reload_sources_action),
             ))
             .style(|s| s.items_center().gap(6.0)),
-            v_stack((
-                label(move || format!("source policy: {}", model_source_status.get()))
+            Stack::vertical((
+                Label::derived(move || format!("source policy: {}", model_source_status.get()))
                     .style(|s| s.color(theme::text_secondary())),
-                label({
+                Label::derived({
                     let source_registry = source_registry.clone();
                     move || {
                         let target = model_source_target.get().trim().to_string();
@@ -682,7 +682,7 @@ fn model_studio_panel(
                     }
                 })
                 .style(|s| s.color(theme::text_secondary())),
-                label({
+                Label::derived({
                     let source_registry = source_registry.clone();
                     move || {
                         let target = model_source_target.get().trim().to_string();
@@ -715,7 +715,7 @@ fn model_studio_panel(
                     }
                 })
                 .style(|s| s.color(theme::text_secondary())),
-                label(|| {
+                Label::derived(|| {
                     "role keys: chat, planner, coder, codex_specialist, debugger, verifier, image_generation, video_generation"
                 })
                 .style(|s| s.color(theme::text_secondary())),
@@ -723,7 +723,7 @@ fn model_studio_panel(
             .style(|s| s.row_gap(4.0)),
         ))
         .style(|s| s.row_gap(6.0)),
-        label({
+        Label::derived({
             let runtimes = runtimes.clone();
             move || {
                 match runtimes.try_borrow() {
@@ -740,7 +740,7 @@ fn model_studio_panel(
             }
         })
         .style(|s| s.color(theme::text_secondary())),
-        label({
+        Label::derived({
             let runtimes = runtimes.clone();
             move || {
                 match runtimes.try_borrow() {
@@ -753,7 +753,7 @@ fn model_studio_panel(
             }
         })
         .style(|s| s.color(theme::text_secondary())),
-        label({
+        Label::derived({
             let runtimes = runtimes.clone();
             move || {
                 match runtimes.try_borrow() {
@@ -766,9 +766,9 @@ fn model_studio_panel(
             }
         })
         .style(|s| s.color(theme::text_secondary())),
-        label(move || format!("vulkan memory: {}", runtime_vulkan_memory_status.get()))
+        Label::derived(move || format!("vulkan memory: {}", runtime_vulkan_memory_status.get()))
             .style(|s| s.color(theme::text_secondary())),
-        label(move || {
+        Label::derived(move || {
             format!(
                 "vulkan validation: {}",
                 runtime_vulkan_validation_status.get()
@@ -778,4 +778,5 @@ fn model_studio_panel(
     ))
     .style(|s| s.size_full().padding(12.0).row_gap(6.0))
 }
+
 

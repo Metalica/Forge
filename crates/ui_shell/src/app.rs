@@ -33,6 +33,7 @@ use execution_plane::{
 use floem::AnyView;
 use floem::Application;
 use floem::prelude::*;
+use floem::views::{ButtonClass, PlaceholderTextClass, TextInputClass};
 use floem::window::{Icon, WindowConfig};
 use runtime_registry::{
     confidential_relay::{
@@ -74,6 +75,16 @@ use crate::{api::PrimaryView, theme};
 static FORGE_LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static FORGE_PANIC_HOOK_INSTALLED: OnceLock<()> = OnceLock::new();
 type UiOperationResult<T = ()> = Result<T, String>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum SettingsCategory {
+    General,
+    Ui,
+    Windows,
+    Linux,
+    Cpu,
+    Gpu,
+}
 
 fn now_unix_ms() -> u128 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {

@@ -421,9 +421,9 @@ fn media_studio_panel(
     );
     let resume_video = guarded_ui_action("media.resume_video", Some(video_status), resume_video);
 
-    v_stack((
-        label(|| "Media Studio"),
-        label({
+    Stack::vertical((
+        Label::derived(|| "Media Studio"),
+        Label::derived({
             let source_registry = source_registry.clone();
             move || {
                 match source_registry.try_borrow() {
@@ -437,28 +437,28 @@ fn media_studio_panel(
             }
         })
         .style(|s| s.color(theme::text_secondary())),
-        label(|| "Image Studio v1: prompting, seeds, batches, gallery"),
-        h_stack((
-            label(|| "Prompt"),
-            text_input(media_prompt).style(|s| s.min_width(560.0).padding(6.0).color(theme::input_text())),
+        Label::derived(|| "Image Studio v1: prompting, seeds, batches, gallery"),
+        Stack::horizontal((
+            Label::derived(|| "Prompt"),
+            TextInput::new(media_prompt).style(|s| s.min_width(560.0).padding(6.0).color(theme::input_text())),
         ))
         .style(|s| s.gap(8.0)),
-        h_stack((
-            label(|| "Seed"),
-            text_input(media_seed).style(|s| s.min_width(100.0).padding(6.0).color(theme::input_text())),
-            label(|| "Batch"),
-            text_input(media_batch_size).style(|s| s.min_width(80.0).padding(6.0).color(theme::input_text())),
-            button("Queue Images").action(queue_images),
-            button("Clear Gallery").action(clear_gallery),
+        Stack::horizontal((
+            Label::derived(|| "Seed"),
+            TextInput::new(media_seed).style(|s| s.min_width(100.0).padding(6.0).color(theme::input_text())),
+            Label::derived(|| "Batch"),
+            TextInput::new(media_batch_size).style(|s| s.min_width(80.0).padding(6.0).color(theme::input_text())),
+            Button::new("Queue Images").action(queue_images),
+            Button::new("Clear Gallery").action(clear_gallery),
         ))
         .style(|s| s.gap(8.0)),
-        label(move || format!("Queue depth: {}", queued_jobs.get()))
+        Label::derived(move || format!("Queue depth: {}", queued_jobs.get()))
             .style(|s| s.color(theme::text_secondary())),
-        label(move || format!("Running jobs: {}", running_jobs.get()))
+        Label::derived(move || format!("Running jobs: {}", running_jobs.get()))
             .style(|s| s.color(theme::text_secondary())),
-        label(move || format!("Status: {}", media_status.get()))
+        Label::derived(move || format!("Status: {}", media_status.get()))
             .style(|s| s.color(theme::text_secondary())),
-        scroll(label(move || {
+        Scroll::new(Label::derived(move || {
             let gallery = media_gallery.get();
             if gallery.trim().is_empty() {
                 String::from("Gallery is empty. Queue image batches to populate local results.")
@@ -472,27 +472,27 @@ fn media_studio_panel(
                 .padding(8.0)
                 .background(theme::surface_1())
         }),
-        label(|| "Video Studio v1: long-job queue, checkpointing, resumable execution"),
-        h_stack((
-            label(|| "Video Prompt"),
-            text_input(video_prompt).style(|s| s.min_width(520.0).padding(6.0).color(theme::input_text())),
+        Label::derived(|| "Video Studio v1: long-job queue, checkpointing, resumable execution"),
+        Stack::horizontal((
+            Label::derived(|| "Video Prompt"),
+            TextInput::new(video_prompt).style(|s| s.min_width(520.0).padding(6.0).color(theme::input_text())),
         ))
         .style(|s| s.gap(8.0)),
-        h_stack((
-            label(|| "Video Seed"),
-            text_input(video_seed).style(|s| s.min_width(100.0).padding(6.0).color(theme::input_text())),
-            label(|| "Batch"),
-            text_input(video_batch_size).style(|s| s.min_width(80.0).padding(6.0).color(theme::input_text())),
-            label(|| "Duration(s)"),
-            text_input(video_duration_seconds).style(|s| s.min_width(90.0).padding(6.0).color(theme::input_text())),
-            button("Queue Videos").action(queue_videos),
-            button("Checkpoint +10%").action(checkpoint_video),
-            button("Resume Next").action(resume_video),
+        Stack::horizontal((
+            Label::derived(|| "Video Seed"),
+            TextInput::new(video_seed).style(|s| s.min_width(100.0).padding(6.0).color(theme::input_text())),
+            Label::derived(|| "Batch"),
+            TextInput::new(video_batch_size).style(|s| s.min_width(80.0).padding(6.0).color(theme::input_text())),
+            Label::derived(|| "Duration(s)"),
+            TextInput::new(video_duration_seconds).style(|s| s.min_width(90.0).padding(6.0).color(theme::input_text())),
+            Button::new("Queue Videos").action(queue_videos),
+            Button::new("Checkpoint +10%").action(checkpoint_video),
+            Button::new("Resume Next").action(resume_video),
         ))
         .style(|s| s.gap(8.0)),
-        label(move || format!("Video Status: {}", video_status.get()))
+        Label::derived(move || format!("Video Status: {}", video_status.get()))
             .style(|s| s.color(theme::text_secondary())),
-        scroll(label(move || {
+        Scroll::new(Label::derived(move || {
             let checkpoints = video_checkpoint_log.get();
             if checkpoints.trim().is_empty() {
                 String::from("No video checkpoints yet. Queue a video batch first.")
@@ -509,4 +509,5 @@ fn media_studio_panel(
     ))
     .style(|s| s.size_full().padding(12.0).row_gap(8.0))
 }
+
 

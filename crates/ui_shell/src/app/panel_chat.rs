@@ -1072,13 +1072,13 @@ fn chat_panel(
         clear_confidential_sessions,
     );
 
-    v_stack((
-        label(|| "Chat"),
-        v_stack((
-            label(move || format!("Runtime: llama.cpp {}", runtime_version.get())),
-            label(move || format!("Health: {}", runtime_health.get())),
-            label(move || format!("Process: {}", runtime_process_state.get())),
-            label({
+    Stack::vertical((
+        Label::derived(|| "Chat"),
+        Stack::vertical((
+            Label::derived(move || format!("Runtime: llama.cpp {}", runtime_version.get())),
+            Label::derived(move || format!("Health: {}", runtime_health.get())),
+            Label::derived(move || format!("Process: {}", runtime_process_state.get())),
+            Label::derived({
                 let source_registry = source_registry.clone();
                 move || {
                     match source_registry.try_borrow() {
@@ -1090,7 +1090,7 @@ fn chat_panel(
                     }
                 }
             }),
-            label({
+            Label::derived({
                 let source_registry = source_registry.clone();
                 let confidential_relay_sessions = confidential_relay_sessions.clone();
                 move || {
@@ -1129,7 +1129,7 @@ fn chat_panel(
                     )
                 }
             }),
-            label({
+            Label::derived({
                 let confidential_relay_sessions = confidential_relay_sessions.clone();
                 move || {
                     let profile_window =
@@ -1161,7 +1161,7 @@ fn chat_panel(
                     }
                 }
             }),
-            label(move || {
+            Label::derived(move || {
                 let baseline = chat_routed_baseline_latency_ms
                     .get()
                     .map(|value| value.to_string())
@@ -1174,35 +1174,35 @@ fn chat_panel(
             }),
         ))
         .style(|s| s.row_gap(4.0).color(theme::text_secondary())),
-        h_stack((
-            label(|| "Host"),
-            text_input(llama_host).style(|s| s.min_width(120.0).padding(6.0).color(theme::input_text())),
-            label(|| "Port"),
-            text_input(llama_port).style(|s| s.min_width(70.0).padding(6.0).color(theme::input_text())),
+        Stack::horizontal((
+            Label::derived(|| "Host"),
+            TextInput::new(llama_host).style(|s| s.min_width(120.0).padding(6.0).color(theme::input_text())),
+            Label::derived(|| "Port"),
+            TextInput::new(llama_port).style(|s| s.min_width(70.0).padding(6.0).color(theme::input_text())),
         ))
         .style(|s| s.gap(6.0)),
-        h_stack((
-            label(|| "n_predict"),
-            text_input(chat_n_predict).style(|s| s.min_width(80.0).padding(6.0).color(theme::input_text())),
-            button("Generate Local").action(generate_local),
-            button("Generate Routed").action(generate_routed),
-            button("Generate Confidential").action(generate_confidential),
+        Stack::horizontal((
+            Label::derived(|| "n_predict"),
+            TextInput::new(chat_n_predict).style(|s| s.min_width(80.0).padding(6.0).color(theme::input_text())),
+            Button::new("Generate Local").action(generate_local),
+            Button::new("Generate Routed").action(generate_routed),
+            Button::new("Generate Confidential").action(generate_confidential),
         ))
         .style(|s| s.gap(8.0)),
-        v_stack((
-            h_stack((
-                label(|| "Attestation measurement"),
-                text_input(chat_confidential_measurement).style(|s| s.min_width(320.0).padding(6.0).color(theme::input_text())),
+        Stack::vertical((
+            Stack::horizontal((
+                Label::derived(|| "Attestation measurement"),
+                TextInput::new(chat_confidential_measurement).style(|s| s.min_width(320.0).padding(6.0).color(theme::input_text())),
             )),
-            h_stack((
-                label(|| "Policy mode"),
-                text_input(chat_confidential_policy_mode).style(|s| s.min_width(120.0).padding(6.0).color(theme::input_text())),
-                label(|| "Max attestation age ms"),
-                text_input(chat_confidential_max_attestation_age_ms)
+            Stack::horizontal((
+                Label::derived(|| "Policy mode"),
+                TextInput::new(chat_confidential_policy_mode).style(|s| s.min_width(120.0).padding(6.0).color(theme::input_text())),
+                Label::derived(|| "Max attestation age ms"),
+                TextInput::new(chat_confidential_max_attestation_age_ms)
                     .style(|s| s.min_width(140.0).padding(6.0).color(theme::input_text())),
             )),
-            h_stack((
-                label(move || {
+            Stack::horizontal((
+                Label::derived(move || {
                     format!(
                         "CPU required={}",
                         if chat_confidential_require_cpu.get() {
@@ -1212,9 +1212,9 @@ fn chat_panel(
                         }
                     )
                 }),
-                button("CPU Req On").action(set_require_cpu_on),
-                button("CPU Req Off").action(set_require_cpu_off),
-                label(move || {
+                Button::new("CPU Req On").action(set_require_cpu_on),
+                Button::new("CPU Req Off").action(set_require_cpu_off),
+                Label::derived(move || {
                     format!(
                         "GPU required={}",
                         if chat_confidential_require_gpu.get() {
@@ -1224,9 +1224,9 @@ fn chat_panel(
                         }
                     )
                 }),
-                button("GPU Req On").action(set_require_gpu_on),
-                button("GPU Req Off").action(set_require_gpu_off),
-                label(move || {
+                Button::new("GPU Req On").action(set_require_gpu_on),
+                Button::new("GPU Req Off").action(set_require_gpu_off),
+                Label::derived(move || {
                     format!(
                         "Fallback remote={}",
                         if chat_confidential_allow_remote_fallback.get() {
@@ -1236,28 +1236,28 @@ fn chat_panel(
                         }
                     )
                 }),
-                button("Fallback On").action(set_remote_fallback_on),
-                button("Fallback Off").action(set_remote_fallback_off),
-                button("Save Confidential Policy").action(save_confidential_policy),
+                Button::new("Fallback On").action(set_remote_fallback_on),
+                Button::new("Fallback Off").action(set_remote_fallback_off),
+                Button::new("Save Confidential Policy").action(save_confidential_policy),
             )),
-            h_stack((
-                label(|| "Profile window"),
-                text_input(chat_confidential_profile_window)
+            Stack::horizontal((
+                Label::derived(|| "Profile window"),
+                TextInput::new(chat_confidential_profile_window)
                     .style(|s| s.min_width(100.0).padding(6.0).color(theme::input_text())),
-                button("Save Window").action(save_confidential_profile_window),
-                button("Prune Expired Sessions").action(prune_expired_confidential_sessions),
-                button("Clear Session History").action(clear_confidential_sessions),
+                Button::new("Save Window").action(save_confidential_profile_window),
+                Button::new("Prune Expired Sessions").action(prune_expired_confidential_sessions),
+                Button::new("Clear Session History").action(clear_confidential_sessions),
             )),
         ))
         .style(|s| s.row_gap(8.0)),
-        h_stack((
-            label(|| "Prompt"),
-            text_input(chat_prompt).style(|s| s.min_width(420.0).padding(6.0).color(theme::input_text())),
+        Stack::horizontal((
+            Label::derived(|| "Prompt"),
+            TextInput::new(chat_prompt).style(|s| s.min_width(420.0).padding(6.0).color(theme::input_text())),
         ))
         .style(|s| s.gap(8.0)),
-        label(move || format!("Status: {}", chat_status.get()))
+        Label::derived(move || format!("Status: {}", chat_status.get()))
             .style(|s| s.color(theme::text_secondary())),
-        label(move || {
+        Label::derived(move || {
             format!(
                 "Confidential Banner: {}",
                 format_confidential_banner(chat_confidential_status.get().as_str())
@@ -1271,9 +1271,9 @@ fn chat_panel(
             };
             s.color(color)
         }),
-        label(move || format!("Confidential: {}", chat_confidential_status.get()))
+        Label::derived(move || format!("Confidential: {}", chat_confidential_status.get()))
             .style(|s| s.color(theme::text_secondary())),
-        scroll(label(move || chat_output.get())).style(|s| {
+        Scroll::new(Label::derived(move || chat_output.get())).style(|s| {
             s.width_full()
                 .height(220.0)
                 .padding(8.0)
@@ -1282,4 +1282,5 @@ fn chat_panel(
     ))
     .style(|s| s.size_full().padding(12.0).row_gap(8.0))
 }
+
 

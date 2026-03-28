@@ -509,14 +509,14 @@ fn agent_studio_panel(
         Some(agent_codex_status),
         run_routed_active_step_action,
     );
-    let codex_specialist_section = v_stack((
-        label(|| "Agent Provider Adapter").style(|s| {
+    let codex_specialist_section = Stack::vertical((
+        Label::derived(|| "Agent Provider Adapter").style(|s| {
             s.padding_top(8.0)
                 .font_size(13.0)
                 .color(theme::text_secondary())
         }),
-        h_stack((
-            label(move || {
+        Stack::horizontal((
+            Label::derived(move || {
                 format!(
                     "Policy: {}",
                     if agent_codex_auto.get() {
@@ -526,22 +526,22 @@ fn agent_studio_panel(
                     }
                 )
             }),
-            button("Auto On").action(codex_auto_on),
-            button("Auto Off").action(codex_auto_off),
+            Button::new("Auto On").action(codex_auto_on),
+            Button::new("Auto Off").action(codex_auto_off),
         ))
         .style(|s| s.gap(6.0).items_center()),
-        h_stack((
-            label(|| "Prompt"),
-            text_input(agent_codex_prompt).style(|s| s.min_width(480.0).padding(6.0).color(theme::input_text())),
-            label(|| "Max Tokens"),
-            text_input(agent_codex_max_tokens).style(|s| s.min_width(90.0).padding(6.0).color(theme::input_text())),
-            button("Run Codex Specialist").action(run_codex_specialist_action),
-            button("Run Active Routed Step").action(run_routed_active_step_action),
+        Stack::horizontal((
+            Label::derived(|| "Prompt"),
+            TextInput::new(agent_codex_prompt).style(|s| s.min_width(480.0).padding(6.0).color(theme::input_text())),
+            Label::derived(|| "Max Tokens"),
+            TextInput::new(agent_codex_max_tokens).style(|s| s.min_width(90.0).padding(6.0).color(theme::input_text())),
+            Button::new("Run Codex Specialist").action(run_codex_specialist_action),
+            Button::new("Run Active Routed Step").action(run_routed_active_step_action),
         ))
         .style(|s| s.gap(6.0).items_center()),
-        label(move || format!("adapter status: {}", agent_codex_status.get()))
+        Label::derived(move || format!("adapter status: {}", agent_codex_status.get()))
             .style(|s| s.color(theme::text_secondary())),
-        scroll(label(move || agent_codex_output.get())).style(|s| {
+        Scroll::new(Label::derived(move || agent_codex_output.get())).style(|s| {
             s.width_full()
                 .height(120.0)
                 .padding(8.0)
@@ -682,69 +682,69 @@ fn agent_studio_panel(
         memory_clear_scope_action,
     );
 
-    let memory_scope_section = v_stack((
-        label(|| "Memory Scope").style(|s| {
+    let memory_scope_section = Stack::vertical((
+        Label::derived(|| "Memory Scope").style(|s| {
             s.padding_top(8.0)
                 .font_size(13.0)
                 .color(theme::text_secondary())
         }),
-        h_stack((
-            label(|| "Scope"),
-            text_input(agent_memory_scope).style(|s| s.min_width(140.0).padding(6.0).color(theme::input_text())),
-            label(|| "Key"),
-            text_input(agent_memory_key).style(|s| s.min_width(220.0).padding(6.0).color(theme::input_text())),
-            label(|| "Value"),
-            text_input(agent_memory_value).style(|s| s.min_width(360.0).padding(6.0).color(theme::input_text())),
-            button("Save Memory").action(memory_save_action),
+        Stack::horizontal((
+            Label::derived(|| "Scope"),
+            TextInput::new(agent_memory_scope).style(|s| s.min_width(140.0).padding(6.0).color(theme::input_text())),
+            Label::derived(|| "Key"),
+            TextInput::new(agent_memory_key).style(|s| s.min_width(220.0).padding(6.0).color(theme::input_text())),
+            Label::derived(|| "Value"),
+            TextInput::new(agent_memory_value).style(|s| s.min_width(360.0).padding(6.0).color(theme::input_text())),
+            Button::new("Save Memory").action(memory_save_action),
         ))
         .style(|s| s.gap(6.0).items_center()),
-        h_stack((
-            label(|| "Recall Query"),
-            text_input(agent_memory_query).style(|s| s.min_width(300.0).padding(6.0).color(theme::input_text())),
-            button("Recall").action(memory_recall_action),
-            button("Clear Scope").action(memory_clear_scope_action),
+        Stack::horizontal((
+            Label::derived(|| "Recall Query"),
+            TextInput::new(agent_memory_query).style(|s| s.min_width(300.0).padding(6.0).color(theme::input_text())),
+            Button::new("Recall").action(memory_recall_action),
+            Button::new("Clear Scope").action(memory_clear_scope_action),
         ))
         .style(|s| s.gap(6.0).items_center()),
-        label(move || format!("memory status: {}", agent_memory_status.get()))
+        Label::derived(move || format!("memory status: {}", agent_memory_status.get()))
             .style(|s| s.color(theme::text_secondary())),
-        scroll(label(move || agent_memory_output.get())).style(|s| {
+        Scroll::new(Label::derived(move || agent_memory_output.get())).style(|s| {
             s.width_full()
                 .height(110.0)
                 .padding(8.0)
                 .background(theme::surface_1())
         }),
-        label(|| "Allowed scopes: session | project | workspace")
+        Label::derived(|| "Allowed scopes: session | project | workspace")
             .style(|s| s.color(theme::text_secondary())),
     ))
     .style(|s| s.row_gap(6.0));
 
-    let trace_section = v_stack((
-        label(|| "Trace Filters").style(|s| {
+    let trace_section = Stack::vertical((
+        Label::derived(|| "Trace Filters").style(|s| {
             s.padding_top(6.0)
                 .font_size(13.0)
                 .color(theme::text_secondary())
         }),
-        h_stack((
-            label(|| "Query"),
-            text_input(agent_trace_filter_query).style(|s| s.min_width(220.0).padding(6.0).color(theme::input_text())),
-            label(|| "Kind"),
-            button("All").action(filter_all_events),
-            button("Run").action(filter_run_events),
-            button("Step").action(filter_step_events),
-            button("Approval").action(filter_approval_events),
-            button("Failure").action(filter_failure_events),
+        Stack::horizontal((
+            Label::derived(|| "Query"),
+            TextInput::new(agent_trace_filter_query).style(|s| s.min_width(220.0).padding(6.0).color(theme::input_text())),
+            Label::derived(|| "Kind"),
+            Button::new("All").action(filter_all_events),
+            Button::new("Run").action(filter_run_events),
+            Button::new("Step").action(filter_step_events),
+            Button::new("Approval").action(filter_approval_events),
+            Button::new("Failure").action(filter_failure_events),
         ))
         .style(|s| s.gap(6.0).items_center()),
-        h_stack((
-            label(|| "Role"),
-            button("All").action(role_all),
-            button("Planner").action(role_planner),
-            button("Coder").action(role_coder),
-            button("Debugger").action(role_debugger),
-            button("Verifier").action(role_verifier),
+        Stack::horizontal((
+            Label::derived(|| "Role"),
+            Button::new("All").action(role_all),
+            Button::new("Planner").action(role_planner),
+            Button::new("Coder").action(role_coder),
+            Button::new("Debugger").action(role_debugger),
+            Button::new("Verifier").action(role_verifier),
         ))
         .style(|s| s.gap(6.0).items_center()),
-        label(move || {
+        Label::derived(move || {
             format!(
                 "active filters: kind={} role={} query={}",
                 agent_trace_filter_kind.get(),
@@ -757,12 +757,12 @@ fn agent_studio_panel(
             )
         })
         .style(|s| s.color(theme::text_secondary())),
-        label(|| "Trace (Filtered)").style(|s| {
+        Label::derived(|| "Trace (Filtered)").style(|s| {
             s.padding_top(6.0)
                 .font_size(13.0)
                 .color(theme::text_secondary())
         }),
-        label({
+        Label::derived({
             let agent_orchestrator = agent_orchestrator.clone();
             move || {
                 match agent_orchestrator.try_borrow() {
@@ -782,12 +782,12 @@ fn agent_studio_panel(
                 .line_height(1.35)
                 .color(theme::text_primary())
         }),
-        label(|| "Trace (Recent Raw)").style(|s| {
+        Label::derived(|| "Trace (Recent Raw)").style(|s| {
             s.padding_top(4.0)
                 .font_size(13.0)
                 .color(theme::text_secondary())
         }),
-        label(move || agent_trace_line.get()).style(|s| {
+        Label::derived(move || agent_trace_line.get()).style(|s| {
             s.font_family("Consolas".to_string())
                 .line_height(1.35)
                 .color(theme::text_primary())
@@ -795,27 +795,27 @@ fn agent_studio_panel(
     ))
     .style(|s| s.row_gap(6.0));
 
-    v_stack((
-        label(|| "Agent Studio"),
-        label(move || agent_status_line.get()).style(|s| s.color(theme::text_secondary())),
-        h_stack((
-            button("New Run").action(create_run_action),
-            button("Start Next").action(start_next_action),
-            button("Request Approval").action(request_approval_action),
-            button("Approve").action(approve_action),
-            button("Deny").action(deny_action),
-            button("Complete Running").action(complete_running_action),
-            button("Fail Running").action(fail_running_action),
+    Stack::vertical((
+        Label::derived(|| "Agent Studio"),
+        Label::derived(move || agent_status_line.get()).style(|s| s.color(theme::text_secondary())),
+        Stack::horizontal((
+            Button::new("New Run").action(create_run_action),
+            Button::new("Start Next").action(start_next_action),
+            Button::new("Request Approval").action(request_approval_action),
+            Button::new("Approve").action(approve_action),
+            Button::new("Deny").action(deny_action),
+            Button::new("Complete Running").action(complete_running_action),
+            Button::new("Fail Running").action(fail_running_action),
         ))
         .style(|s| s.gap(6.0).items_center()),
         codex_specialist_section,
         memory_scope_section,
-        label(|| "Sub-Agent Graph").style(|s| {
+        Label::derived(|| "Sub-Agent Graph").style(|s| {
             s.padding_top(8.0)
                 .font_size(13.0)
                 .color(theme::text_secondary())
         }),
-        label({
+        Label::derived({
             let agent_orchestrator = agent_orchestrator.clone();
             move || {
                 match agent_orchestrator.try_borrow() {
@@ -831,12 +831,12 @@ fn agent_studio_panel(
                 .line_height(1.35)
                 .color(theme::text_primary())
         }),
-        label(|| "Steps").style(|s| {
+        Label::derived(|| "Steps").style(|s| {
             s.padding_top(8.0)
                 .font_size(13.0)
                 .color(theme::text_secondary())
         }),
-        label(move || agent_steps_line.get()).style(|s| {
+        Label::derived(move || agent_steps_line.get()).style(|s| {
             s.font_family("Consolas".to_string())
                 .line_height(1.4)
                 .color(theme::text_primary())
@@ -1226,27 +1226,27 @@ fn extensions_panel(
         permission_check_action,
     );
 
-    v_stack((
-        label(|| "Extensions"),
-        label(|| "Sandbox + permissions are enforced through Extension Host policy")
+    Stack::vertical((
+        Label::derived(|| "Extensions"),
+        Label::derived(|| "Sandbox + permissions are enforced through Extension Host policy")
             .style(|s| s.color(theme::text_secondary())),
-        label(move || format!("status: {}", extension_status.get()))
+        Label::derived(move || format!("status: {}", extension_status.get()))
             .style(|s| s.color(theme::text_secondary())),
-        h_stack((
-            label(|| "Target"),
-            text_input(extension_target).style(|s| s.min_width(220.0).padding(6.0).color(theme::input_text())),
-            button("Enable").action(enable_action),
-            button("Disable").action(disable_action),
-            button("Grant Required").action(grant_permissions_action),
-            button("Revoke Required").action(revoke_permissions_action),
-            button("Approve Broad Scope").action(approve_overbroad_action),
-            button("Revoke Broad Scope").action(revoke_overbroad_action),
-            button("Check Perms").action(permission_check_action),
-            button("Isolate").action(isolate_action),
-            button("Recover").action(recover_action),
+        Stack::horizontal((
+            Label::derived(|| "Target"),
+            TextInput::new(extension_target).style(|s| s.min_width(220.0).padding(6.0).color(theme::input_text())),
+            Button::new("Enable").action(enable_action),
+            Button::new("Disable").action(disable_action),
+            Button::new("Grant Required").action(grant_permissions_action),
+            Button::new("Revoke Required").action(revoke_permissions_action),
+            Button::new("Approve Broad Scope").action(approve_overbroad_action),
+            Button::new("Revoke Broad Scope").action(revoke_overbroad_action),
+            Button::new("Check Perms").action(permission_check_action),
+            Button::new("Isolate").action(isolate_action),
+            Button::new("Recover").action(recover_action),
         ))
         .style(|s| s.gap(6.0).items_center()),
-        label({
+        Label::derived({
             let extension_host = extension_host.clone();
             move || {
                 match extension_host.try_borrow() {
@@ -1256,8 +1256,8 @@ fn extensions_panel(
             }
         })
         .style(|s| s.color(theme::text_secondary())),
-        label(|| "Selected").style(|s| s.color(theme::text_secondary())),
-        scroll(label({
+        Label::derived(|| "Selected").style(|s| s.color(theme::text_secondary())),
+        Scroll::new(Label::derived({
             let extension_host = extension_host.clone();
             move || {
                 match extension_host.try_borrow() {
@@ -1272,8 +1272,8 @@ fn extensions_panel(
                 .padding(8.0)
                 .background(theme::surface_1())
         }),
-        label(|| "Inventory").style(|s| s.color(theme::text_secondary())),
-        scroll(label({
+        Label::derived(|| "Inventory").style(|s| s.color(theme::text_secondary())),
+        Scroll::new(Label::derived({
             let extension_host = extension_host.clone();
             move || {
                 match extension_host.try_borrow() {
@@ -2602,4 +2602,5 @@ fn resolve_active_agent_run_id(
     }
     orchestrator.runs_snapshot().last().map(|run| run.run_id)
 }
+
 

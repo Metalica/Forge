@@ -18,19 +18,6 @@ pub fn launch_desktop() {
         .run();
 }
 
-const FORGE_ICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 512 512" fill="none">
-<defs>
-<linearGradient id="metal" x1="96" y1="112" x2="420" y2="188" gradientUnits="userSpaceOnUse">
-<stop stop-color="#185DD6"/><stop offset="1" stop-color="#73B8FF"/>
-</linearGradient>
-<linearGradient id="flame" x1="170" y1="492" x2="338" y2="188" gradientUnits="userSpaceOnUse">
-<stop stop-color="#FF2600"/><stop offset="0.55" stop-color="#FF7A00"/><stop offset="1" stop-color="#FFD34D"/>
-</linearGradient>
-</defs>
-<path d="M96 112h324l-82 76H182l-32 88H94z" fill="url(#metal)" stroke="#C8ECFF" stroke-width="5"/>
-<path d="M148 275l190-87-40 116-80 32-94 156 38-108z" fill="url(#flame)" stroke="#FFA850" stroke-width="4"/>
-</svg>"##;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct VideoCheckpointState {
     asset_id: u64,
@@ -55,6 +42,8 @@ fn forge_view() -> impl IntoView {
     let forge_view_started = Instant::now();
     log_info("startup", "forge_view init begin");
     let active_view = RwSignal::new(PrimaryView::Workspace);
+    let settings_submenu_open = RwSignal::new(false);
+    let settings_category = RwSignal::new(SettingsCategory::General);
     let sidebar_open = RwSignal::new(true);
     let inspector_open = RwSignal::new(true);
     let bottom_open = RwSignal::new(false);
@@ -472,20 +461,25 @@ fn forge_view() -> impl IntoView {
         log_info("startup", "agent studio state prepared");
     }
 
-    let top_shell = h_stack((
-        left_rail(active_view, sidebar_open),
+    let top_shell = Stack::horizontal((
+        left_rail(
+            active_view,
+            settings_submenu_open,
+            settings_category,
+        ),
         dyn_container(
             move || sidebar_open.get(),
             move |is_open| {
                 if is_open {
                     sidebar_panel(active_view).into_any()
                 } else {
-                    empty().into_any()
+                    Empty::new().into_any()
                 }
             },
         ),
         main_surface(
             active_view,
+            settings_category,
             command_query,
             resources.clone(),
             queue.clone(),
@@ -645,7 +639,7 @@ fn forge_view() -> impl IntoView {
                     )
                     .into_any()
                 } else {
-                    empty().into_any()
+                    Empty::new().into_any()
                 }
             }
         }),
@@ -671,38 +665,39 @@ fn forge_view() -> impl IntoView {
                 )
                 .into_any()
             } else {
-                empty().into_any()
+                Empty::new().into_any()
             }
         }
     });
 
     log_startup_checkpoint("forge_view init", forge_view_started);
-    v_stack((top_shell, bottom_stack)).style(|s| {
+    Stack::vertical((top_shell, bottom_stack)).style(|s| {
         s.size_full()
             .background(theme::window_bg())
             .color(theme::text_primary())
+            .class(ButtonClass, |s| s.color(theme::input_text()))
+            .class(TextInputClass, |s| s.color(theme::input_text()))
+            .class(PlaceholderTextClass, |s| s.color(theme::input_text()))
     })
 }
 
 fn nav_button(
     target: PrimaryView,
     active_view: RwSignal<PrimaryView>,
-    sidebar_open: RwSignal<bool>,
 ) -> impl IntoView {
-    button(label(move || {
-        format!(
-            "{} {}",
+    Button::new(Stack::horizontal((
+        Label::derived(move || {
             if active_view.get() == target {
                 "[*]"
             } else {
                 "[ ]"
-            },
-            target.title()
-        )
-    }))
+            }
+        })
+        .style(|s| s.width(26.0)),
+        Label::derived(move || target.title()),
+    )))
     .action(move || {
         active_view.set(target);
-        sidebar_open.set(true);
     })
     .style(|s| {
         s.width_full()
@@ -713,88 +708,108 @@ fn nav_button(
 }
 
 fn forge_window_icon() -> Option<Icon> {
-    let size: usize = 128;
-    let mut rgba = vec![0_u8; size * size * 4];
-
-    let metal = [
-        (24.0_f32, 28.0_f32),
-        (105.0, 28.0),
-        (84.0, 48.0),
-        (46.0, 48.0),
-        (38.0, 70.0),
-        (23.0, 70.0),
-    ];
-    let flame = [
-        (37.0_f32, 70.0_f32),
-        (84.0, 48.0),
-        (74.0, 77.0),
-        (54.0, 85.0),
-        (31.0, 124.0),
-        (40.0, 97.0),
-    ];
-
-    for y in 0..size {
-        for x in 0..size {
-            let xf = x as f32 + 0.5;
-            let yf = y as f32 + 0.5;
-            let idx = (y * size + x) * 4;
-
-            if point_in_polygon(xf, yf, &metal) {
-                let t = (x as f32 / (size.saturating_sub(1) as f32)).clamp(0.0, 1.0);
-                rgba[idx] = (24.0 + 91.0 * t) as u8;
-                rgba[idx + 1] = (93.0 + 90.0 * t) as u8;
-                rgba[idx + 2] = (214.0 + 41.0 * t) as u8;
-                rgba[idx + 3] = 255;
-            }
-            if point_in_polygon(xf, yf, &flame) {
-                let ty = (y as f32 / (size.saturating_sub(1) as f32)).clamp(0.0, 1.0);
-                let tx = (x as f32 / (size.saturating_sub(1) as f32)).clamp(0.0, 1.0);
-                rgba[idx] = 255;
-                rgba[idx + 1] = (45.0 + 150.0 * (1.0 - ty) + 20.0 * tx).min(255.0) as u8;
-                rgba[idx + 2] = (8.0 + 25.0 * (1.0 - ty)).min(255.0) as u8;
-                rgba[idx + 3] = 255;
-            }
-        }
-    }
-
-    Icon::from_rgba(rgba, size as u32, size as u32).ok()
+    None
 }
 
-fn point_in_polygon(x: f32, y: f32, polygon: &[(f32, f32)]) -> bool {
-    if polygon.len() < 3 {
-        return false;
-    }
-    let mut inside = false;
-    let mut j = polygon.len() - 1;
-    for i in 0..polygon.len() {
-        let (xi, yi) = polygon[i];
-        let (xj, yj) = polygon[j];
-        let intersects =
-            (yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi + f32::EPSILON) + xi;
-        if intersects {
-            inside = !inside;
+fn left_rail(
+    active_view: RwSignal<PrimaryView>,
+    settings_submenu_open: RwSignal<bool>,
+    settings_category: RwSignal<SettingsCategory>,
+) -> impl IntoView {
+    let settings_sub_buttons = dyn_container(
+        move || (active_view.get(), settings_submenu_open.get()),
+        move |(view, submenu_open)| {
+            if view == PrimaryView::Settings && submenu_open {
+            let settings_sub_button = |category: SettingsCategory, title: &'static str| {
+                Button::new(Stack::horizontal((
+                    Label::derived(move || {
+                        if settings_category.get() == category {
+                            "[*]"
+                        } else {
+                            "[ ]"
+                        }
+                    })
+                    .style(|s| s.width(26.0)),
+                    Label::derived(move || title),
+                )))
+                    .style(|s| {
+                        s.width_full()
+                            .padding_horiz(8.0)
+                            .padding_vert(3.0)
+                            .justify_start()
+                    })
+            };
+            Stack::vertical((
+                settings_sub_button(SettingsCategory::General, "General").action(move || {
+                    settings_category.set(SettingsCategory::General);
+                }),
+                settings_sub_button(SettingsCategory::Ui, "UI").action(move || {
+                    settings_category.set(SettingsCategory::Ui);
+                }),
+                settings_sub_button(SettingsCategory::Windows, "Windows").action(move || {
+                    settings_category.set(SettingsCategory::Windows);
+                }),
+                settings_sub_button(SettingsCategory::Linux, "Linux").action(move || {
+                    settings_category.set(SettingsCategory::Linux);
+                }),
+                settings_sub_button(SettingsCategory::Cpu, "CPU").action(move || {
+                    settings_category.set(SettingsCategory::Cpu);
+                }),
+                settings_sub_button(SettingsCategory::Gpu, "GPU").action(move || {
+                    settings_category.set(SettingsCategory::Gpu);
+                }),
+            ))
+            .style(|s| {
+                s.width_full()
+                    .padding_left(18.0)
+                    .padding_top(2.0)
+                    .row_gap(2.0)
+                    .background(theme::surface_2())
+            })
+            .into_any()
+        } else {
+            Empty::new().into_any()
         }
-        j = i;
-    }
-    inside
-}
+    })
+    .style(|s| s.width_full().height(148.0));
 
-fn left_rail(active_view: RwSignal<PrimaryView>, sidebar_open: RwSignal<bool>) -> impl IntoView {
-    v_stack((
-        h_stack((
-            svg(FORGE_ICON_SVG).style(|s| s.size(24.0, 24.0)),
-            label(|| "Forge").style(|s| s.font_size(16.0).color(theme::accent())),
-        ))
-        .style(|s| s.gap(8.0).items_center().padding_bottom(8.0)),
-        nav_button(PrimaryView::Workspace, active_view, sidebar_open),
-        nav_button(PrimaryView::Code, active_view, sidebar_open),
-        nav_button(PrimaryView::Chat, active_view, sidebar_open),
-        nav_button(PrimaryView::Models, active_view, sidebar_open),
-        nav_button(PrimaryView::Agents, active_view, sidebar_open),
-        nav_button(PrimaryView::Media, active_view, sidebar_open),
-        nav_button(PrimaryView::Jobs, active_view, sidebar_open),
-        nav_button(PrimaryView::Extensions, active_view, sidebar_open),
-        nav_button(PrimaryView::Settings, active_view, sidebar_open),
+    Stack::vertical((
+        nav_button(PrimaryView::Workspace, active_view),
+        nav_button(PrimaryView::Code, active_view),
+        nav_button(PrimaryView::Chat, active_view),
+        nav_button(PrimaryView::Models, active_view),
+        nav_button(PrimaryView::Agents, active_view),
+        nav_button(PrimaryView::Media, active_view),
+        nav_button(PrimaryView::Jobs, active_view),
+        nav_button(PrimaryView::Extensions, active_view),
+        Button::new(Stack::horizontal((
+            Label::derived(move || {
+                if active_view.get() == PrimaryView::Settings {
+                    "[*]"
+                } else {
+                    "[ ]"
+                }
+            })
+            .style(|s| s.width(26.0)),
+            Label::derived(|| "Settings"),
+            Label::derived(move || if settings_submenu_open.get() { " v" } else { " >" })
+                .style(|s| s.width(16.0)),
+        )))
+        .action(move || {
+            if active_view.get() == PrimaryView::Settings {
+                settings_submenu_open.update(|value| *value = !*value);
+            } else {
+                active_view.set(PrimaryView::Settings);
+                settings_submenu_open.set(true);
+            }
+        })
+        .style(|s| {
+            s.width_full()
+                .padding_horiz(8.0)
+                .padding_vert(4.0)
+                .justify_start()
+        }),
+        settings_sub_buttons,
     ))
     .style(|s| {
         s.width(220.0)
@@ -807,18 +822,18 @@ fn left_rail(active_view: RwSignal<PrimaryView>, sidebar_open: RwSignal<bool>) -
 }
 
 fn sidebar_panel(active_view: RwSignal<PrimaryView>) -> impl IntoView {
-    let title = label(move || format!("{} Sidebar", active_view.get().title()))
+    let title = Label::derived(move || format!("{} Sidebar", active_view.get().title()))
         .style(|s| s.font_size(14.0));
-    let body = scroll(v_stack((
-        label(|| "Project: E:\\Forge"),
-        label(|| "Recent files"),
-        label(|| "- FORGE_DEVELOPMENT_PLAN.md"),
-        label(|| "- SKILL.md"),
-        label(|| "- AGENT.md"),
-        label(|| "Pinned: Runtime Cards, Agent Graph, Telemetry"),
+    let body = Scroll::new(Stack::vertical((
+        Label::derived(|| "Project: E:\\Forge"),
+        Label::derived(|| "Recent files"),
+        Label::derived(|| "- FORGE_DEVELOPMENT_PLAN.md"),
+        Label::derived(|| "- SKILL.md"),
+        Label::derived(|| "- AGENT.md"),
+        Label::derived(|| "Pinned: Runtime Cards, Agent Graph, Telemetry"),
     )))
     .style(|s| s.size_full().padding(10.0).row_gap(6.0));
-    v_stack((title, body)).style(|s| {
+    Stack::vertical((title, body)).style(|s| {
         s.width(280.0)
             .height_full()
             .padding(8.0)
@@ -830,6 +845,7 @@ fn sidebar_panel(active_view: RwSignal<PrimaryView>) -> impl IntoView {
 #[allow(clippy::too_many_arguments)]
 fn main_surface(
     active_view: RwSignal<PrimaryView>,
+    settings_category: RwSignal<SettingsCategory>,
     command_query: RwSignal<String>,
     resources: Rc<RefCell<ResourceManager>>,
     queue: Rc<RefCell<JobQueue>>,
@@ -1498,32 +1514,32 @@ fn main_surface(
             runtime_profile_status,
         );
     };
-    let toolbar_update_runtime = guarded_ui_action(
+    let _toolbar_update_runtime = guarded_ui_action(
         "toolbar.update_runtime",
         Some(runtime_profile_status),
         toolbar_update_runtime,
     );
-    let toolbar_start_runtime = guarded_ui_action(
+    let _toolbar_start_runtime = guarded_ui_action(
         "toolbar.start_runtime",
         Some(runtime_profile_status),
         toolbar_start_runtime,
     );
-    let toolbar_stop_runtime = guarded_ui_action(
+    let _toolbar_stop_runtime = guarded_ui_action(
         "toolbar.stop_runtime",
         Some(runtime_profile_status),
         toolbar_stop_runtime,
     );
-    let toolbar_vulkan_on = guarded_ui_action(
+    let _toolbar_vulkan_on = guarded_ui_action(
         "toolbar.vulkan_on",
         Some(runtime_profile_status),
         toolbar_vulkan_on,
     );
-    let toolbar_vulkan_off = guarded_ui_action(
+    let _toolbar_vulkan_off = guarded_ui_action(
         "toolbar.vulkan_off",
         Some(runtime_profile_status),
         toolbar_vulkan_off,
     );
-    let toolbar_vulkan_update = guarded_ui_action(
+    let _toolbar_vulkan_update = guarded_ui_action(
         "toolbar.vulkan_update",
         Some(runtime_profile_status),
         toolbar_vulkan_update,
@@ -1559,37 +1575,23 @@ fn main_surface(
         apply_dock_review,
     );
 
-    let command_row = h_stack((
-        h_stack((
-            label(|| "Command"),
-            text_input(command_query).style(|s| s.min_width(220.0).padding(6.0).color(theme::input_text())),
+    let command_row = Stack::horizontal((
+        Stack::horizontal((
+            Label::derived(|| "Command"),
+            TextInput::new(command_query).style(|s| s.min_width(220.0).padding(6.0).color(theme::input_text())),
         ))
         .style(|s| s.items_center().gap(6.0)),
-        h_stack((
-            label(|| "llama.cpp"),
-            button("On").action(toolbar_start_runtime),
-            button("Off").action(toolbar_stop_runtime),
-            button("Update").action(toolbar_update_runtime),
+        Stack::horizontal((
+            Label::derived(|| "Dock"),
+            Button::new("Sidebar").action(toggle_sidebar),
+            Button::new("Inspector").action(toggle_inspector),
+            Button::new("Bottom").action(toggle_bottom),
+            Button::new("Balanced").action(apply_dock_balanced),
+            Button::new("Focus").action(apply_dock_focus),
+            Button::new("Review").action(apply_dock_review),
         ))
         .style(|s| s.items_center().gap(6.0)),
-        h_stack((
-            label(|| "Vulkan llama.cpp"),
-            button("On").action(toolbar_vulkan_on),
-            button("Off").action(toolbar_vulkan_off),
-            button("Update").action(toolbar_vulkan_update),
-        ))
-        .style(|s| s.items_center().gap(6.0)),
-        h_stack((
-            label(|| "Dock"),
-            button("Sidebar").action(toggle_sidebar),
-            button("Inspector").action(toggle_inspector),
-            button("Bottom").action(toggle_bottom),
-            button("Balanced").action(apply_dock_balanced),
-            button("Focus").action(apply_dock_focus),
-            button("Review").action(apply_dock_review),
-        ))
-        .style(|s| s.items_center().gap(6.0)),
-        label(move || {
+        Label::derived(move || {
             format!(
                 "layout: sidebar={} inspector={} bottom={}",
                 sidebar_open.get(),
@@ -1612,6 +1614,7 @@ fn main_surface(
         move |view| {
             main_surface_content(
                 view,
+                settings_category,
                 resources.clone(),
                 queue.clone(),
                 workspace.clone(),
@@ -1638,10 +1641,18 @@ fn main_surface(
                 runtime_version,
                 runtime_health,
                 runtime_process_state,
+                runtime_profile_status,
+                runtime_process_pid,
+                runtime_processes.clone(),
                 runtime_vulkan_memory_status,
                 runtime_vulkan_validation_status,
+                llama_model_path,
                 llama_host,
                 llama_port,
+                llama_ctx_size,
+                llama_threads,
+                llama_gpu_layers,
+                llama_batch_size,
                 chat_prompt,
                 chat_n_predict,
                 chat_output,
@@ -1717,11 +1728,11 @@ fn main_surface(
         },
     );
 
-    let telemetry = h_stack((
-        label(move || format!("CPU {}%", cpu_percent.get())),
-        label(move || format!("GPU {}%", gpu_percent.get())),
-        label(move || format!("RAM {} MB", ram_used.get())),
-        label(move || format!("VRAM {} MB", vram_used.get())),
+    let telemetry = Stack::horizontal((
+        Label::derived(move || format!("CPU {}%", cpu_percent.get())),
+        Label::derived(move || format!("GPU {}%", gpu_percent.get())),
+        Label::derived(move || format!("RAM {} MB", ram_used.get())),
+        Label::derived(move || format!("VRAM {} MB", vram_used.get())),
     ))
     .style(|s| {
         s.width_full()
@@ -1731,13 +1742,14 @@ fn main_surface(
             .color(theme::text_secondary())
     });
 
-    v_stack((command_row, content, telemetry))
+    Stack::vertical((command_row, content, telemetry))
         .style(|s| s.size_full().background(theme::window_bg()).row_gap(6.0))
 }
 
 #[allow(clippy::too_many_arguments)]
 fn main_surface_content(
     view: PrimaryView,
+    settings_category: RwSignal<SettingsCategory>,
     resources: Rc<RefCell<ResourceManager>>,
     queue: Rc<RefCell<JobQueue>>,
     workspace: Rc<WorkspaceHost>,
@@ -1764,10 +1776,18 @@ fn main_surface_content(
     runtime_version: RwSignal<String>,
     runtime_health: RwSignal<String>,
     runtime_process_state: RwSignal<String>,
+    runtime_profile_status: RwSignal<String>,
+    runtime_process_pid: RwSignal<String>,
+    runtime_processes: Rc<RefCell<RuntimeProcessManager>>,
     runtime_vulkan_memory_status: RwSignal<String>,
     runtime_vulkan_validation_status: RwSignal<String>,
+    llama_model_path: RwSignal<String>,
     llama_host: RwSignal<String>,
     llama_port: RwSignal<String>,
+    llama_ctx_size: RwSignal<String>,
+    llama_threads: RwSignal<String>,
+    llama_gpu_layers: RwSignal<String>,
+    llama_batch_size: RwSignal<String>,
     chat_prompt: RwSignal<String>,
     chat_n_predict: RwSignal<String>,
     chat_output: RwSignal<String>,
@@ -1841,9 +1861,9 @@ fn main_surface_content(
     feature_policy_snapshot: RwSignal<String>,
 ) -> AnyView {
     match view {
-        PrimaryView::Workspace => v_stack((
-            label(|| "Workspace"),
-            label(move || workspace.root().display().to_string()),
+        PrimaryView::Workspace => Stack::vertical((
+            Label::derived(|| "Workspace"),
+            Label::derived(move || workspace.root().display().to_string()),
         ))
         .style(|s| s.size_full().padding(12.0).row_gap(6.0))
         .into_any(),
@@ -1976,7 +1996,7 @@ fn main_surface_content(
             source_registry,
         )
         .into_any(),
-        PrimaryView::Jobs => v_stack((jobs_panel(
+        PrimaryView::Jobs => Stack::vertical((jobs_panel(
             queue,
             queued_jobs,
             running_jobs,
@@ -1999,8 +2019,8 @@ fn main_surface_content(
             spill_hint,
         )
         .into_any(),
-        PrimaryView::Settings => v_stack((
-            label(|| "Settings"),
+        PrimaryView::Settings => Stack::vertical((
+            Label::derived(|| "Settings"),
             settings_panel(
                 workspace,
                 feature_registry,
@@ -2009,12 +2029,27 @@ fn main_surface_content(
                 feature_fallback_visible,
                 feature_policy_snapshot,
                 runtimes,
+                runtime_profile_status,
+                runtime_version,
+                runtime_health,
+                runtime_process_state,
+                runtime_process_pid,
+                runtime_processes,
                 runtime_vulkan_memory_status,
                 runtime_vulkan_validation_status,
+                llama_model_path,
+                llama_host,
+                llama_port,
+                llama_ctx_size,
+                llama_threads,
+                llama_gpu_layers,
+                llama_batch_size,
+                settings_category,
             ),
         ))
         .style(|s| s.size_full().padding(12.0).row_gap(6.0))
         .into_any(),
     }
 }
+
 

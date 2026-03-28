@@ -606,32 +606,32 @@ fn inspector_panel(
         }
     };
 
-    let launch_profile_inputs = v_stack((
-        label(|| "llama.cpp Launch Profile"),
-        h_stack((
-            label(|| "Model"),
-            text_input(llama_model_path).style(|s| s.min_width(200.0).padding(6.0).color(theme::input_text())),
+    let launch_profile_inputs = Stack::vertical((
+        Label::derived(|| "llama.cpp Launch Profile"),
+        Stack::horizontal((
+            Label::derived(|| "Model"),
+            TextInput::new(llama_model_path).style(|s| s.min_width(200.0).padding(6.0).color(theme::input_text())),
         ))
         .style(|s| s.gap(6.0)),
-        h_stack((
-            label(|| "Host"),
-            text_input(llama_host).style(|s| s.min_width(120.0).padding(6.0).color(theme::input_text())),
-            label(|| "Port"),
-            text_input(llama_port).style(|s| s.min_width(70.0).padding(6.0).color(theme::input_text())),
+        Stack::horizontal((
+            Label::derived(|| "Host"),
+            TextInput::new(llama_host).style(|s| s.min_width(120.0).padding(6.0).color(theme::input_text())),
+            Label::derived(|| "Port"),
+            TextInput::new(llama_port).style(|s| s.min_width(70.0).padding(6.0).color(theme::input_text())),
         ))
         .style(|s| s.gap(6.0)),
-        h_stack((
-            label(|| "Ctx"),
-            text_input(llama_ctx_size).style(|s| s.min_width(70.0).padding(6.0).color(theme::input_text())),
-            label(|| "Threads"),
-            text_input(llama_threads).style(|s| s.min_width(70.0).padding(6.0).color(theme::input_text())),
+        Stack::horizontal((
+            Label::derived(|| "Ctx"),
+            TextInput::new(llama_ctx_size).style(|s| s.min_width(70.0).padding(6.0).color(theme::input_text())),
+            Label::derived(|| "Threads"),
+            TextInput::new(llama_threads).style(|s| s.min_width(70.0).padding(6.0).color(theme::input_text())),
         ))
         .style(|s| s.gap(6.0)),
-        h_stack((
-            label(|| "GPU layers"),
-            text_input(llama_gpu_layers).style(|s| s.min_width(70.0).padding(6.0).color(theme::input_text())),
-            label(|| "Batch"),
-            text_input(llama_batch_size).style(|s| s.min_width(70.0).padding(6.0).color(theme::input_text())),
+        Stack::horizontal((
+            Label::derived(|| "GPU layers"),
+            TextInput::new(llama_gpu_layers).style(|s| s.min_width(70.0).padding(6.0).color(theme::input_text())),
+            Label::derived(|| "Batch"),
+            TextInput::new(llama_batch_size).style(|s| s.min_width(70.0).padding(6.0).color(theme::input_text())),
         ))
         .style(|s| s.gap(6.0)),
     ))
@@ -687,11 +687,11 @@ fn inspector_panel(
         poll_runtime,
     );
 
-    let runtime_identity = v_stack((
-        label(|| "Inspector"),
-        label(move || format!("Runtime: {}", runtime_version.get())),
-        label(move || format!("Health: {}", runtime_health.get())),
-        label({
+    let runtime_identity = Stack::vertical((
+        Label::derived(|| "Inspector"),
+        Label::derived(move || format!("Runtime: {}", runtime_version.get())),
+        Label::derived(move || format!("Health: {}", runtime_health.get())),
+        Label::derived({
             let runtimes = runtimes.clone();
             move || {
                 match runtimes.try_borrow() {
@@ -706,7 +706,7 @@ fn inspector_panel(
                 }
             }
         }),
-        label({
+        Label::derived({
             let runtimes = runtimes.clone();
             move || {
                 match runtimes.try_borrow() {
@@ -719,7 +719,7 @@ fn inspector_panel(
             }
         })
         .style(|s| s.color(theme::text_secondary())),
-        label({
+        Label::derived({
             let runtimes = runtimes.clone();
             move || {
                 match runtimes.try_borrow() {
@@ -732,13 +732,13 @@ fn inspector_panel(
             }
         })
         .style(|s| s.color(theme::text_secondary())),
-        label(move || format!("Process: {}", runtime_process_state.get())),
-        label(move || format!("PID: {}", runtime_process_pid.get())),
-        label(move || format!("Profile: {}", runtime_profile_status.get()))
+        Label::derived(move || format!("Process: {}", runtime_process_state.get())),
+        Label::derived(move || format!("PID: {}", runtime_process_pid.get())),
+        Label::derived(move || format!("Profile: {}", runtime_profile_status.get()))
             .style(|s| s.color(theme::text_secondary())),
-        label(move || format!("Vulkan Memory: {}", runtime_vulkan_memory_status.get()))
+        Label::derived(move || format!("Vulkan Memory: {}", runtime_vulkan_memory_status.get()))
             .style(|s| s.color(theme::text_secondary())),
-        label(move || {
+        Label::derived(move || {
             format!(
                 "Vulkan Validation: {}",
                 runtime_vulkan_validation_status.get()
@@ -748,26 +748,26 @@ fn inspector_panel(
     ))
     .style(|s| s.row_gap(4.0));
 
-    let runtime_controls = v_stack((
-        h_stack((
-            button("Start Runtime").action(start_runtime),
-            button("Stop Runtime").action(stop_runtime),
-            button("Poll").action(poll_runtime),
+    let runtime_controls = Stack::vertical((
+        Stack::horizontal((
+            Button::new("Start Runtime").action(start_runtime),
+            Button::new("Stop Runtime").action(stop_runtime),
+            Button::new("Poll").action(poll_runtime),
         ))
         .style(|s| s.gap(6.0)),
-        button("Update Runtime").action(update_runtime),
-        button("Rollback Runtime").action(rollback_runtime),
-        h_stack((
-            button("Pin Runtime").action(pin_runtime),
-            button("Unpin Runtime").action(unpin_runtime),
-            button("Record Bench").action(record_runtime_benchmark),
+        Button::new("Update Runtime").action(update_runtime),
+        Button::new("Rollback Runtime").action(rollback_runtime),
+        Stack::horizontal((
+            Button::new("Pin Runtime").action(pin_runtime),
+            Button::new("Unpin Runtime").action(unpin_runtime),
+            Button::new("Record Bench").action(record_runtime_benchmark),
         ))
         .style(|s| s.gap(6.0)),
     ))
     .style(|s| s.row_gap(6.0));
 
-    let resource_controls = v_stack((
-        label({
+    let resource_controls = Stack::vertical((
+        Label::derived({
             let resources = resources.clone();
             move || {
                 match resources.try_borrow() {
@@ -779,18 +779,18 @@ fn inspector_panel(
                 }
             }
         }),
-        label(move || format!("RAM: {}/{} MB", ram_used.get(), ram_budget.get())),
-        label(move || format!("VRAM: {}/{} MB", vram_used.get(), vram_budget.get())),
-        label(move || format!("Spill: {}", spill_hint.get())),
-        h_stack((
-            button("Reserve VRAM +256").action(reserve_vram),
-            button("Release VRAM -256").action(release_vram),
+        Label::derived(move || format!("RAM: {}/{} MB", ram_used.get(), ram_budget.get())),
+        Label::derived(move || format!("VRAM: {}/{} MB", vram_used.get(), vram_budget.get())),
+        Label::derived(move || format!("Spill: {}", spill_hint.get())),
+        Stack::horizontal((
+            Button::new("Reserve VRAM +256").action(reserve_vram),
+            Button::new("Release VRAM -256").action(release_vram),
         ))
         .style(|s| s.gap(6.0)),
     ))
     .style(|s| s.row_gap(4.0));
 
-    v_stack((
+    Stack::vertical((
         runtime_identity,
         launch_profile_inputs,
         runtime_controls,
@@ -805,4 +805,5 @@ fn inspector_panel(
             .border_left(1.0)
     })
 }
+
 
