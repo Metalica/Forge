@@ -211,20 +211,19 @@ fn forge_view() -> impl IntoView {
     let model_source_target = RwSignal::new(String::from("codex-specialist-openjarvis-mode-b"));
     let model_source_role = RwSignal::new(String::from("codex_specialist"));
     let model_confidential_verifier_endpoint = RwSignal::new(
-        std::env::var("CONFIDENTIAL_VERIFIER_URL")
-            .unwrap_or_else(|_| "https://attest.example/verify".to_string()),
+        read_env_or_default("CONFIDENTIAL_VERIFIER_URL", "https://attest.example/verify"),
     );
-    let model_confidential_expected_provider =
-        RwSignal::new(std::env::var("CONFIDENTIAL_EXPECTED_PROVIDER").unwrap_or_default());
+    let model_confidential_expected_provider = RwSignal::new(
+        read_env_optional("CONFIDENTIAL_EXPECTED_PROVIDER").unwrap_or_default(),
+    );
     let model_confidential_measurement_prefixes = RwSignal::new(
-        std::env::var("CONFIDENTIAL_MEASUREMENT_PREFIXES")
-            .unwrap_or_else(|_| "sha256:trusted-".to_string()),
+        read_env_or_default("CONFIDENTIAL_MEASUREMENT_PREFIXES", "sha256:trusted-"),
     );
-    let model_confidential_timeout_ms = RwSignal::new(
-        std::env::var("CONFIDENTIAL_VERIFIER_TIMEOUT_MS").unwrap_or_else(|_| "5000".to_string()),
+    let model_confidential_timeout_ms =
+        RwSignal::new(read_env_or_default("CONFIDENTIAL_VERIFIER_TIMEOUT_MS", "5000"));
+    let model_confidential_api_key_env_var = RwSignal::new(
+        read_env_optional("CONFIDENTIAL_VERIFIER_API_KEY_ENV").unwrap_or_default(),
     );
-    let model_confidential_api_key_env_var =
-        RwSignal::new(std::env::var("CONFIDENTIAL_VERIFIER_API_KEY_ENV").unwrap_or_default());
     let model_source_status = RwSignal::new(String::from("source registry ready"));
     let active_agent_run_id = RwSignal::new(None::<u64>);
     let project_memory_path = project_memory_state_path();

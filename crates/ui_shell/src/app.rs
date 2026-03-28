@@ -129,6 +129,14 @@ fn log_startup_checkpoint(scope: &str, started: Instant) {
     );
 }
 
+fn read_env_optional(name: &str) -> Option<String> {
+    std::env::var(name).ok()
+}
+
+fn read_env_or_default(name: &str, default: &str) -> String {
+    read_env_optional(name).unwrap_or_else(|| default.to_string())
+}
+
 fn install_forge_panic_hook() {
     if FORGE_PANIC_HOOK_INSTALLED.get().is_some() {
         return;

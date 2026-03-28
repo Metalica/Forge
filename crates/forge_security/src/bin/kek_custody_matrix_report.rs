@@ -90,14 +90,11 @@ impl ReportArgs {
             out_path,
             kek_id,
             tpm2_context_path: tpm2_context_path
-                .or_else(|| env::var(ENV_TPM2_CONTEXT).ok())
-                .filter(|value| !value.trim().is_empty()),
+                .or_else(|| read_optional_non_empty_env(ENV_TPM2_CONTEXT)),
             keyring_serial: keyring_serial
-                .or_else(|| env::var(ENV_KEYRING_SERIAL).ok())
-                .filter(|value| !value.trim().is_empty()),
+                .or_else(|| read_optional_non_empty_env(ENV_KEYRING_SERIAL)),
             secret_service_ref: secret_service_ref
-                .or_else(|| env::var(ENV_SECRET_SERVICE_REF).ok())
-                .filter(|value| !value.trim().is_empty()),
+                .or_else(|| read_optional_non_empty_env(ENV_SECRET_SERVICE_REF)),
         })
     }
 
@@ -113,6 +110,16 @@ Env fallback:
 Example:
   cargo run -p forge_security --bin kek_custody_matrix_report -- --out E:/Forge/.tmp/security/kek_custody_matrix.json".to_string()
     }
+}
+
+fn read_optional_non_empty_env(name: &str) -> Option<String> {
+    env::var(name).ok().and_then(|value| {
+        if value.trim().is_empty() {
+            None
+        } else {
+            Some(value)
+        }
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

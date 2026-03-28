@@ -1,4 +1,4 @@
-use std::env;
+use crate::env_config;
 #[cfg(test)]
 use std::sync::Mutex;
 use std::sync::OnceLock;
@@ -48,32 +48,23 @@ pub struct DataGovernancePolicy {
 
 impl DataGovernancePolicy {
     pub fn from_env() -> Self {
-        let workspace_classification = env::var("FORGE_WORKSPACE_CLASSIFICATION")
-            .ok()
-            .and_then(|value| WorkspaceClassification::from_env_value(value.as_str()))
-            .unwrap_or(WorkspaceClassification::Internal);
+        let workspace_classification =
+            env_config::read_optional_non_empty("FORGE_WORKSPACE_CLASSIFICATION")
+                .and_then(|value| WorkspaceClassification::from_env_value(value.as_str()))
+                .unwrap_or(WorkspaceClassification::Internal);
 
-        let remote_egress_allowed = env_flag("FORGE_ALLOW_REMOTE_EGRESS")
+        let remote_egress_allowed = env_config::read_flexible_flag("FORGE_ALLOW_REMOTE_EGRESS")
             .unwrap_or(default_remote_egress_allowed(workspace_classification));
-        let export_approved = env_flag("FORGE_EXPORT_APPROVED").unwrap_or(false);
+        let export_approved =
+            env_config::read_flexible_flag("FORGE_EXPORT_APPROVED").unwrap_or(false);
         let export_approval_required =
-            env_flag("FORGE_REQUIRE_EXPORT_APPROVAL").unwrap_or(matches!(
+            env_config::read_flexible_flag("FORGE_REQUIRE_EXPORT_APPROVAL").unwrap_or(matches!(
                 workspace_classification,
                 WorkspaceClassification::Confidential | WorkspaceClassification::Restricted
             ));
-        let retention_days = env::var("FORGE_WORKSPACE_RETENTION_DAYS")
-            .ok()
-            .and_then(|value| value.trim().parse::<u32>().ok())
-            .filter(|value| *value > 0);
-        let custom_block_patterns = env::var("FORGE_DLP_BLOCK_PATTERNS")
-            .ok()
-            .map(|raw| {
-                raw.split([';', ','])
-                    .map(|value| value.trim())
-                    .filter(|value| !value.is_empty())
-                    .map(|value| value.to_ascii_lowercase())
-                    .collect::<Vec<_>>()
-            })
+        let retention_days = env_config::read_positive_u32("FORGE_WORKSPACE_RETENTION_DAYS");
+        let custom_block_patterns = env_config::read_optional_non_empty("FORGE_DLP_BLOCK_PATTERNS")
+            .map(|raw| env_config::parse_csv_list_lowercase(raw.as_str()))
             .unwrap_or_default();
 
         Self {
@@ -168,16 +159,6 @@ fn enforce_remote_egress_policy_with_policy(
         export_approved: policy.export_approved,
         retention_days: policy.retention_days,
     })
-}
-
-fn env_flag(name: &str) -> Option<bool> {
-    let raw = env::var(name).ok()?;
-    let normalized = raw.trim().to_ascii_lowercase();
-    match normalized.as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => None,
-    }
 }
 
 fn default_dlp_patterns() -> &'static [String] {

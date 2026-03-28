@@ -1,3 +1,4 @@
+use crate::env_config::{self, RequiredEnvError};
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use argon2::{Algorithm, Argon2, Params, Version};
@@ -336,7 +337,7 @@ impl EnvAesKekAdapter {
     }
 
     fn resolve_delegate(&self) -> Result<StaticAesKekAdapter, SecretBrokerError> {
-        let raw = std::env::var(&self.env_key)
+        let raw = env_config::read_required(&self.env_key)
             .map_err(|_| SecretBrokerError::new(format!("missing KEK env var {}", self.env_key)))?;
         let key_bytes = parse_kek_bytes(&raw)?;
         StaticAesKekAdapter::new(self.key_id.clone(), key_bytes)
@@ -433,20 +434,23 @@ impl EnvArgon2idKekAdapter {
     }
 
     fn resolve_delegate(&self) -> Result<StaticAesKekAdapter, SecretBrokerError> {
-        let passphrase = std::env::var(&self.passphrase_env_key).map_err(|_| {
-            SecretBrokerError::new(format!(
-                "missing argon2id passphrase env var {}",
-                self.passphrase_env_key
-            ))
-        })?;
-        if passphrase.trim().is_empty() {
-            return Err(SecretBrokerError::new(format!(
-                "argon2id passphrase env var {} cannot be empty",
-                self.passphrase_env_key
-            )));
-        }
+        let passphrase = match env_config::read_required_non_empty(&self.passphrase_env_key) {
+            Ok(value) => value,
+            Err(RequiredEnvError::Missing) => {
+                return Err(SecretBrokerError::new(format!(
+                    "missing argon2id passphrase env var {}",
+                    self.passphrase_env_key
+                )));
+            }
+            Err(RequiredEnvError::Empty) => {
+                return Err(SecretBrokerError::new(format!(
+                    "argon2id passphrase env var {} cannot be empty",
+                    self.passphrase_env_key
+                )));
+            }
+        };
         let mut passphrase_bytes = passphrase.into_bytes();
-        let raw_salt = std::env::var(&self.salt_env_key).map_err(|_| {
+        let raw_salt = env_config::read_required(&self.salt_env_key).map_err(|_| {
             clear_bytes(passphrase_bytes.as_mut_slice());
             SecretBrokerError::new(format!(
                 "missing argon2id salt env var {}",

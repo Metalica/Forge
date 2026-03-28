@@ -742,16 +742,15 @@ fn benchmark_flag_state(env_key: &str) -> String {
         }
         return format!("override({})", clip_text(trimmed, 16));
     }
-    match std::env::var(env_key) {
-        Ok(value) => {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                "set(empty)".to_string()
-            } else {
-                format!("set({})", clip_text(trimmed, 16))
-            }
+    if let Some(value) = read_env_optional(env_key) {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            "set(empty)".to_string()
+        } else {
+            format!("set({})", clip_text(trimmed, 16))
         }
-        Err(_) => "unset".to_string(),
+    } else {
+        "unset".to_string()
     }
 }
 
@@ -795,7 +794,7 @@ fn benchmark_flag_value(env_key: &str) -> Option<String> {
     if let Some(value) = benchmark_flag_override_value(env_key) {
         return Some(value);
     }
-    std::env::var(env_key).ok()
+    read_env_optional(env_key)
 }
 
 fn benchmark_flags_snapshot_line() -> String {

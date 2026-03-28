@@ -11,11 +11,7 @@ fn parse_opt_in_flag(value: Option<&str>) -> bool {
 }
 
 fn dangerous_extension_controls_enabled() -> bool {
-    parse_opt_in_flag(
-        std::env::var(DANGEROUS_EXTENSION_CONTROLS_ENV)
-            .ok()
-            .as_deref(),
-    )
+    parse_opt_in_flag(read_env_optional(DANGEROUS_EXTENSION_CONTROLS_ENV).as_deref())
 }
 
 #[allow(clippy::too_many_arguments)]

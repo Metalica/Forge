@@ -6,6 +6,7 @@ use crate::confidential_relay::{
     build_confidential_session_key_id, verify_attestation,
 };
 use crate::data_governance::enforce_remote_egress_policy;
+use crate::env_config;
 use crate::incident_response_quarantine::enforce_incident_response_quarantine;
 use crate::local_api_hardening::guard_and_audit_provider_route;
 use crate::model_provider_trust_policy::enforce_model_provider_trust_policy;
@@ -20,7 +21,6 @@ use crate::openjarvis_mode_b::{
 use crate::source_registry::{SourceEntry, SourceKind, SourceRegistry, SourceRole};
 use forge_security::broker::{SecretInjectionTarget, with_global_secret_broker};
 use serde_json::{Value, json};
-use std::env;
 use std::error::Error;
 use std::fmt;
 use std::io::Read;
@@ -1001,31 +1001,19 @@ fn resolve_openai_bearer_auth_header() -> Result<String, String> {
 }
 
 fn resolve_openai_api_key_from_env() -> Result<String, String> {
-    for key_name in ["OPENAI_API_KEY"] {
-        if let Ok(value) = env::var(key_name) {
-            let trimmed = value.trim();
-            if !trimmed.is_empty() {
-                return Ok(trimmed.to_string());
-            }
-        }
+    if let Some(value) = env_config::read_optional_non_empty("OPENAI_API_KEY") {
+        return Ok(value);
     }
     Err("missing OpenAI API key: set OPENAI_API_KEY".to_string())
 }
 
 fn resolve_codex_specialist_model() -> String {
-    env::var("CODEX_SPECIALIST_MODEL")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+    env_config::read_optional_non_empty("CODEX_SPECIALIST_MODEL")
         .unwrap_or_else(|| "gpt-5.3-codex".to_string())
 }
 
 fn resolve_chat_model() -> String {
-    env::var("CHAT_MODEL")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "gpt-5.2".to_string())
+    env_config::read_optional_non_empty("CHAT_MODEL").unwrap_or_else(|| "gpt-5.2".to_string())
 }
 
 fn resolve_role_model(role: SourceRole) -> String {
@@ -1035,11 +1023,7 @@ fn resolve_role_model(role: SourceRole) -> String {
         SourceRole::Verifier => "VERIFIER_MODEL",
         _ => return resolve_chat_model(),
     };
-    env::var(env_key)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(resolve_chat_model)
+    env_config::read_optional_non_empty(env_key).unwrap_or_else(resolve_chat_model)
 }
 
 fn role_to_mode_b_task_kind(role: SourceRole) -> Result<OpenJarvisBridgeTaskKind, String> {

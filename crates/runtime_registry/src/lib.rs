@@ -3,6 +3,7 @@
 pub mod allocator_build;
 pub mod confidential_relay;
 pub mod data_governance;
+pub(crate) mod env_config;
 pub mod incident_response_quarantine;
 pub mod io_routing;
 pub mod local_api_hardening;

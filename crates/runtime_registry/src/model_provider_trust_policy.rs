@@ -1,8 +1,8 @@
 use crate::data_governance::{DataGovernancePolicy, WorkspaceClassification};
+use crate::env_config;
 use crate::source_registry::{SourceEntry, SourceKind};
 #[cfg(test)]
 use std::cell::RefCell;
-use std::env;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderPolicyClass {
@@ -80,47 +80,57 @@ impl ModelProviderTrustPolicy {
         let workspace_classification = governance.workspace_classification;
 
         let workspace_allowlist_key = workspace_provider_allowlist_env(workspace_classification);
-        let allowed_provider_ids = read_optional_env(workspace_allowlist_key.as_str())
-            .or_else(|| read_optional_env("FORGE_PROVIDER_ALLOWLIST"))
-            .map(|value| parse_csv_list(value.as_str()))
-            .unwrap_or_default();
-
-        let workspace_max_risk_key = workspace_max_risk_tier_env(workspace_classification);
-        let max_model_risk_tier = read_optional_env(workspace_max_risk_key.as_str())
-            .or_else(|| read_optional_env("FORGE_MAX_MODEL_RISK_TIER"))
-            .and_then(|value| ModelRiskTier::from_env_value(value.as_str()))
-            .unwrap_or_else(|| default_max_risk_tier(workspace_classification));
-
-        let allow_local_model_class = env_flag("FORGE_ALLOW_LOCAL_MODEL_CLASS").unwrap_or(true);
-        let allow_local_compatible_api_class =
-            env_flag("FORGE_ALLOW_LOCAL_COMPATIBLE_API_CLASS").unwrap_or(true);
-        let allow_remote_provider_class =
-            env_flag("FORGE_ALLOW_REMOTE_PROVIDER_CLASS").unwrap_or(!matches!(
-                workspace_classification,
-                WorkspaceClassification::Restricted
-            ));
-
-        let require_local_model_manifest_verified =
-            env_flag("FORGE_REQUIRE_LOCAL_MODEL_MANIFEST_VERIFIED").unwrap_or(matches!(
-                workspace_classification,
-                WorkspaceClassification::Confidential | WorkspaceClassification::Restricted
-            ));
-        let local_model_manifest_verified_source_ids =
-            read_optional_env("FORGE_LOCAL_MODEL_MANIFEST_VERIFIED_SOURCES")
-                .map(|value| parse_csv_list(value.as_str()))
+        let allowed_provider_ids =
+            env_config::read_optional_non_empty(workspace_allowlist_key.as_str())
+                .or_else(|| env_config::read_optional_non_empty("FORGE_PROVIDER_ALLOWLIST"))
+                .map(|value| env_config::parse_csv_list_lowercase(value.as_str()))
                 .unwrap_or_default();
 
-        let require_signed_sources =
-            env_flag("FORGE_REQUIRE_SIGNED_MODEL_SOURCES").unwrap_or(matches!(
-                workspace_classification,
-                WorkspaceClassification::Confidential | WorkspaceClassification::Restricted
-            ));
-        let signed_source_ids = read_optional_env("FORGE_SIGNED_SOURCE_IDS")
-            .map(|value| parse_csv_list(value.as_str()))
+        let workspace_max_risk_key = workspace_max_risk_tier_env(workspace_classification);
+        let max_model_risk_tier =
+            env_config::read_optional_non_empty(workspace_max_risk_key.as_str())
+                .or_else(|| env_config::read_optional_non_empty("FORGE_MAX_MODEL_RISK_TIER"))
+                .and_then(|value| ModelRiskTier::from_env_value(value.as_str()))
+                .unwrap_or_else(|| default_max_risk_tier(workspace_classification));
+
+        let allow_local_model_class =
+            env_config::read_flexible_flag("FORGE_ALLOW_LOCAL_MODEL_CLASS").unwrap_or(true);
+        let allow_local_compatible_api_class =
+            env_config::read_flexible_flag("FORGE_ALLOW_LOCAL_COMPATIBLE_API_CLASS")
+                .unwrap_or(true);
+        let allow_remote_provider_class = env_config::read_flexible_flag(
+            "FORGE_ALLOW_REMOTE_PROVIDER_CLASS",
+        )
+        .unwrap_or(!matches!(
+            workspace_classification,
+            WorkspaceClassification::Restricted
+        ));
+
+        let require_local_model_manifest_verified =
+            env_config::read_flexible_flag("FORGE_REQUIRE_LOCAL_MODEL_MANIFEST_VERIFIED")
+                .unwrap_or(matches!(
+                    workspace_classification,
+                    WorkspaceClassification::Confidential | WorkspaceClassification::Restricted
+                ));
+        let local_model_manifest_verified_source_ids =
+            env_config::read_optional_non_empty("FORGE_LOCAL_MODEL_MANIFEST_VERIFIED_SOURCES")
+                .map(|value| env_config::parse_csv_list_lowercase(value.as_str()))
+                .unwrap_or_default();
+
+        let require_signed_sources = env_config::read_flexible_flag(
+            "FORGE_REQUIRE_SIGNED_MODEL_SOURCES",
+        )
+        .unwrap_or(matches!(
+            workspace_classification,
+            WorkspaceClassification::Confidential | WorkspaceClassification::Restricted
+        ));
+        let signed_source_ids = env_config::read_optional_non_empty("FORGE_SIGNED_SOURCE_IDS")
+            .map(|value| env_config::parse_csv_list_lowercase(value.as_str()))
             .unwrap_or_default();
-        let model_risk_overrides = read_optional_env("FORGE_MODEL_RISK_TIER_OVERRIDES")
-            .map(|value| parse_model_risk_overrides(value.as_str()))
-            .unwrap_or_default();
+        let model_risk_overrides =
+            env_config::read_optional_non_empty("FORGE_MODEL_RISK_TIER_OVERRIDES")
+                .map(|value| parse_model_risk_overrides(value.as_str()))
+                .unwrap_or_default();
 
         Self {
             workspace_classification,
@@ -350,33 +360,6 @@ fn workspace_max_risk_tier_env(workspace: WorkspaceClassification) -> String {
         "FORGE_MAX_MODEL_RISK_TIER_{}",
         workspace.label().to_ascii_uppercase()
     )
-}
-
-fn parse_csv_list(raw: &str) -> Vec<String> {
-    raw.split([';', ','])
-        .map(|value| value.trim().to_ascii_lowercase())
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>()
-}
-
-fn read_optional_env(name: &str) -> Option<String> {
-    env::var(name).ok().and_then(|value| {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    })
-}
-
-fn env_flag(name: &str) -> Option<bool> {
-    let raw = env::var(name).ok()?;
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => None,
-    }
 }
 
 #[cfg(test)]

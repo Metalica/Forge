@@ -2,6 +2,7 @@
 
 pub mod agent_orchestrator;
 pub mod benchmark;
+pub(crate) mod env_config;
 pub mod extension_host;
 pub mod feature_policy;
 pub mod io_policy;

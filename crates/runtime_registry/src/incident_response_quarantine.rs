@@ -1,7 +1,7 @@
+use crate::env_config;
 use sha2::{Digest, Sha256};
 #[cfg(test)]
 use std::cell::RefCell;
-use std::env;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
@@ -28,33 +28,47 @@ pub struct IncidentResponseQuarantinePolicy {
 
 impl IncidentResponseQuarantinePolicy {
     pub fn from_env() -> Self {
-        let recovery_endpoint_allowlist = env::var("FORGE_QUARANTINE_RECOVERY_ENDPOINTS")
-            .ok()
-            .map(|value| parse_csv_list(value.as_str()))
-            .unwrap_or_default();
-        let marker_path = read_optional_env("FORGE_QUARANTINE_MARKER_PATH");
-        let evidence_bundle_path = read_optional_env("FORGE_QUARANTINE_EVIDENCE_BUNDLE_PATH");
-        let evidence_digest_path = read_optional_env("FORGE_QUARANTINE_EVIDENCE_DIGEST_PATH");
+        let recovery_endpoint_allowlist =
+            env_config::read_optional_non_empty("FORGE_QUARANTINE_RECOVERY_ENDPOINTS")
+                .map(|value| env_config::parse_csv_list_lowercase(value.as_str()))
+                .unwrap_or_default();
+        let marker_path = env_config::read_optional_non_empty("FORGE_QUARANTINE_MARKER_PATH");
+        let evidence_bundle_path =
+            env_config::read_optional_non_empty("FORGE_QUARANTINE_EVIDENCE_BUNDLE_PATH");
+        let evidence_digest_path =
+            env_config::read_optional_non_empty("FORGE_QUARANTINE_EVIDENCE_DIGEST_PATH");
         Self {
-            mode_enabled: env_flag("FORGE_QUARANTINE_MODE").unwrap_or(false),
+            mode_enabled: env_config::read_flexible_flag("FORGE_QUARANTINE_MODE").unwrap_or(false),
             recovery_endpoint_allowlist,
             marker_path,
             evidence_bundle_path,
             evidence_digest_path,
-            require_reattestation_before_exit: env_flag(
+            require_reattestation_before_exit: env_config::read_flexible_flag(
                 "FORGE_QUARANTINE_REQUIRE_REATTESTATION_BEFORE_EXIT",
             )
             .unwrap_or(true),
-            reattested: env_flag("FORGE_QUARANTINE_REATTESTED").unwrap_or(false),
-            reverified: env_flag("FORGE_QUARANTINE_REVERIFIED").unwrap_or(false),
-            extensions_frozen: env_flag("FORGE_QUARANTINE_EXTENSIONS_FROZEN").unwrap_or(false),
-            mcp_frozen: env_flag("FORGE_QUARANTINE_MCP_FROZEN").unwrap_or(false),
-            secret_handles_revoked: env_flag("FORGE_QUARANTINE_SECRET_HANDLES_REVOKED")
+            reattested: env_config::read_flexible_flag("FORGE_QUARANTINE_REATTESTED")
                 .unwrap_or(false),
-            caches_invalidated: env_flag("FORGE_QUARANTINE_CACHES_INVALIDATED").unwrap_or(false),
-            memory_lanes_invalidated: env_flag("FORGE_QUARANTINE_MEMORY_LANES_INVALIDATED")
+            reverified: env_config::read_flexible_flag("FORGE_QUARANTINE_REVERIFIED")
                 .unwrap_or(false),
-            relay_blocked: env_flag("FORGE_QUARANTINE_RELAY_BLOCKED").unwrap_or(true),
+            extensions_frozen: env_config::read_flexible_flag("FORGE_QUARANTINE_EXTENSIONS_FROZEN")
+                .unwrap_or(false),
+            mcp_frozen: env_config::read_flexible_flag("FORGE_QUARANTINE_MCP_FROZEN")
+                .unwrap_or(false),
+            secret_handles_revoked: env_config::read_flexible_flag(
+                "FORGE_QUARANTINE_SECRET_HANDLES_REVOKED",
+            )
+            .unwrap_or(false),
+            caches_invalidated: env_config::read_flexible_flag(
+                "FORGE_QUARANTINE_CACHES_INVALIDATED",
+            )
+            .unwrap_or(false),
+            memory_lanes_invalidated: env_config::read_flexible_flag(
+                "FORGE_QUARANTINE_MEMORY_LANES_INVALIDATED",
+            )
+            .unwrap_or(false),
+            relay_blocked: env_config::read_flexible_flag("FORGE_QUARANTINE_RELAY_BLOCKED")
+                .unwrap_or(true),
         }
     }
 }
@@ -293,33 +307,6 @@ fn is_safe_allowlist_prefix_match(endpoint: &str, prefix: &str) -> bool {
         || remainder.starts_with('/')
         || remainder.starts_with('?')
         || remainder.starts_with('#')
-}
-
-fn parse_csv_list(raw: &str) -> Vec<String> {
-    raw.split([';', ','])
-        .map(|value| value.trim().to_ascii_lowercase())
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>()
-}
-
-fn read_optional_env(name: &str) -> Option<String> {
-    env::var(name).ok().and_then(|value| {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    })
-}
-
-fn env_flag(name: &str) -> Option<bool> {
-    let raw = env::var(name).ok()?;
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => None,
-    }
 }
 
 #[cfg(test)]

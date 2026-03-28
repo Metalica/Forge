@@ -1,10 +1,11 @@
+use crate::env_config::{self, RequiredEnvError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::fmt::Write as _;
 use std::{
-    env, fmt, fs,
+    fmt, fs,
     io::Read,
     path::Path,
     time::Duration,
@@ -578,19 +579,20 @@ fn verify_attestation_with_http_json_v1(
         .set("Accept", "application/json")
         .set("Content-Type", "application/json");
     if let Some(api_key_env_var) = verifier.api_key_env_var.as_ref() {
-        let key = env::var(api_key_env_var.trim()).map_err(|_| {
-            format!(
-                "attestation verifier requires env var `{}` but it is not set",
-                api_key_env_var.trim()
-            )
-        })?;
-        let key = key.trim();
-        if key.is_empty() {
-            return Err(format!(
-                "attestation verifier env var `{}` is empty",
-                api_key_env_var.trim()
-            ));
-        }
+        let key_name = api_key_env_var.trim();
+        let key = match env_config::read_required_non_empty(key_name) {
+            Ok(value) => value,
+            Err(RequiredEnvError::Missing) => {
+                return Err(format!(
+                    "attestation verifier requires env var `{key_name}` but it is not set"
+                ));
+            }
+            Err(RequiredEnvError::Empty) => {
+                return Err(format!(
+                    "attestation verifier env var `{key_name}` is empty"
+                ));
+            }
+        };
         request = request.set("Authorization", &format!("Bearer {key}"));
     }
 
@@ -719,10 +721,7 @@ pub(crate) fn insecure_localhost_http_allowed() -> bool {
     if cfg!(test) {
         return true;
     }
-    env::var(INSECURE_LOCALHOST_HTTP_ENV)
-        .ok()
-        .map(|value| value.trim() == "1")
-        .unwrap_or(false)
+    env_config::read_strict_one_flag(INSECURE_LOCALHOST_HTTP_ENV).unwrap_or(false)
 }
 
 pub(crate) fn allow_insecure_localhost_http_endpoint(endpoint: &str) -> bool {

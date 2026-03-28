@@ -1,3 +1,5 @@
+#[cfg(any(target_os = "linux", test))]
+use crate::env_config;
 use std::error::Error;
 use std::fmt;
 
@@ -99,10 +101,7 @@ fn parse_proc_status_numeric_field(status: &str, field: &str) -> Option<u32> {
 
 #[cfg(any(target_os = "linux", test))]
 fn env_flag_enabled(name: &str) -> bool {
-    let Some(raw) = std::env::var(name).ok() else {
-        return false;
-    };
-    parse_env_flag(raw.as_str())
+    env_config::read_opt_in_flag(name)
 }
 
 #[cfg(any(target_os = "linux", test))]

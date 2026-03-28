@@ -1,3 +1,4 @@
+use crate::env_config;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64_URL_SAFE_NO_PAD;
@@ -6,7 +7,6 @@ use rand::RngCore;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::env;
 use std::error::Error;
 use std::fmt;
 
@@ -412,12 +412,7 @@ fn normalize_mcp_tool_key(tool_name: &str) -> Option<String> {
 }
 
 fn env_flag(name: &str) -> Option<bool> {
-    let raw = env::var(name).ok()?;
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Some(true),
-        "0" | "false" | "no" | "off" => Some(false),
-        _ => None,
-    }
+    env_config::read_flexible_flag(name)
 }
 
 fn quarantine_mode_from_env() -> bool {

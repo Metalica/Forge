@@ -1,3 +1,4 @@
+use crate::env_config;
 use std::collections::HashMap;
 use urm::feature_policy::{
     ActivationChecks, FeatureDeclaration, FeatureId, FeatureState, Platform,
@@ -215,7 +216,7 @@ pub fn apply_vulkan_benchmark_gate(
 pub fn default_activation_checks_for_declaration(
     declaration: &FeatureDeclaration,
 ) -> ActivationChecks {
-    default_activation_checks_with_env(declaration, |key| std::env::var(key).ok())
+    default_activation_checks_with_env(declaration, env_config::read_optional)
 }
 
 pub fn default_activation_checks_for_declaration_with_env<F>(
@@ -597,24 +598,15 @@ fn benchmark_gate_env_key(id: FeatureId) -> Option<&'static str> {
 }
 
 fn openvino_present_on_host() -> bool {
-    std::env::var(OPENVINO_PRESENT_ENV)
-        .ok()
-        .map(|value| value.trim() == "1")
-        .unwrap_or(false)
+    env_config::read_strict_one_flag(OPENVINO_PRESENT_ENV).unwrap_or(false)
 }
 
 fn openblas_present_on_host() -> bool {
-    std::env::var(OPENBLAS_PRESENT_ENV)
-        .ok()
-        .map(|value| value.trim() == "1")
-        .unwrap_or(false)
+    env_config::read_strict_one_flag(OPENBLAS_PRESENT_ENV).unwrap_or(false)
 }
 
 fn blis_present_on_host() -> bool {
-    std::env::var(BLIS_PRESENT_ENV)
-        .ok()
-        .map(|value| value.trim() == "1")
-        .unwrap_or(false)
+    env_config::read_strict_one_flag(BLIS_PRESENT_ENV).unwrap_or(false)
 }
 
 fn mimalloc_present_on_host() -> bool {
@@ -630,7 +622,7 @@ fn snmalloc_present_on_host() -> bool {
 }
 
 fn env_presence_override(env_key: &str) -> Option<bool> {
-    std::env::var(env_key).ok().map(|value| value.trim() == "1")
+    env_config::read_strict_one_flag(env_key)
 }
 
 fn perf_present_on_host() -> bool {
