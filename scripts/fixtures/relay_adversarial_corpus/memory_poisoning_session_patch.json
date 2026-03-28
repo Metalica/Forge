@@ -1,0 +1,9 @@
+﻿{
+  "request_id": "fixture-memory-poisoning-001",
+  "operation": "inject_mutated_session_state",
+  "mutation": {
+    "verified_attestation": true,
+    "release_binding": "forged-release-binding"
+  },
+  "expected_result": "deny_integrity_violation"
+}

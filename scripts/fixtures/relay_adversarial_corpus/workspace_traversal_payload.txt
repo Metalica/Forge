@@ -1,0 +1,3 @@
+﻿../../../../Windows/System32/config/SAM
+..\\..\\..\\..\\Users\\Public\\Secrets
+workspace://../../../../outside-root.txt

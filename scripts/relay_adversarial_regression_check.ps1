@@ -20,55 +20,73 @@ $checks = @(
         name = "attestation_verifier_rejection_is_fail_closed"
         threat_class = "attestation_bypass"
         command = "cargo"
-        args = @("test", "-p", "runtime_registry", "verify_attestation_fails_closed_when_verifier_rejects_evidence")
+        args = @("test", "-p", "runtime_registry", "confidential_relay::tests::verify_attestation_fails_closed_when_verifier_rejects_evidence", "--", "--exact")
     },
     @{
         name = "measurement_prefix_mismatch_is_fail_closed"
         threat_class = "measurement_spoofing"
         command = "cargo"
-        args = @("test", "-p", "runtime_registry", "verify_attestation_rejects_unexpected_measurement_prefix")
+        args = @("test", "-p", "runtime_registry", "confidential_relay::tests::verify_attestation_rejects_unexpected_measurement_prefix", "--", "--exact")
     },
     @{
         name = "release_binding_changes_on_policy_identity_change"
         threat_class = "policy_binding_tampering"
         command = "cargo"
-        args = @("test", "-p", "runtime_registry", "release_binding_changes_when_policy_identity_changes")
+        args = @("test", "-p", "runtime_registry", "confidential_relay::tests::release_binding_changes_when_policy_identity_changes", "--", "--exact")
     },
     @{
         name = "policy_identity_is_stable_for_equivalent_metadata"
         threat_class = "policy_identity_confusion"
         command = "cargo"
-        args = @("test", "-p", "runtime_registry", "policy_identity_is_stable_for_equivalent_metadata_order")
+        args = @("test", "-p", "runtime_registry", "confidential_relay::tests::policy_identity_is_stable_for_equivalent_metadata_order", "--", "--exact")
     },
     @{
-        name = "provider_adapter_rejects_replay_bad_attestation_and_insecure_transport"
-        threat_class = "replay_and_transport_downgrade"
+        name = "provider_adapter_rejects_insecure_non_https_source"
+        threat_class = "transport_downgrade"
         command = "cargo"
-        args = @("test", "-p", "runtime_registry", "confidential_chat_rejects_")
+        args = @("test", "-p", "runtime_registry", "provider_adapter::tests::confidential_chat_rejects_insecure_non_https_source", "--", "--exact")
+    },
+    @{
+        name = "provider_adapter_rejects_bad_attestation_before_request"
+        threat_class = "attestation_bypass"
+        command = "cargo"
+        args = @("test", "-p", "runtime_registry", "provider_adapter::tests::confidential_chat_rejects_bad_attestation_before_request", "--", "--exact")
+    },
+    @{
+        name = "provider_adapter_rejects_replayed_nonce_from_active_session_history"
+        threat_class = "replay_attack"
+        command = "cargo"
+        args = @("test", "-p", "runtime_registry", "provider_adapter::tests::confidential_chat_rejects_replayed_nonce_from_active_session_history", "--", "--exact")
     },
     @{
         name = "provider_route_blocks_non_allowlisted_provider"
         threat_class = "provider_allowlist_bypass"
         command = "cargo"
-        args = @("test", "-p", "runtime_registry", "chat_task_remote_api_is_blocked_by_provider_allowlist_policy")
+        args = @("test", "-p", "runtime_registry", "provider_adapter::tests::chat_task_remote_api_is_blocked_by_provider_allowlist_policy", "--", "--exact")
     },
     @{
         name = "provider_route_blocks_model_risk_tier_violations"
         threat_class = "model_risk_tier_bypass"
         command = "cargo"
-        args = @("test", "-p", "runtime_registry", "chat_task_remote_api_is_blocked_by_model_risk_tier_policy")
+        args = @("test", "-p", "runtime_registry", "provider_adapter::tests::chat_task_remote_api_is_blocked_by_model_risk_tier_policy", "--", "--exact")
     },
     @{
         name = "confidential_relay_is_blocked_while_quarantine_active"
         threat_class = "quarantine_bypass"
         command = "cargo"
-        args = @("test", "-p", "runtime_registry", "confidential_chat_task_is_blocked_when_quarantine_mode_enabled")
+        args = @("test", "-p", "runtime_registry", "provider_adapter::tests::confidential_chat_task_is_blocked_when_quarantine_mode_enabled", "--", "--exact")
     },
     @{
-        name = "extensions_and_mcp_are_frozen_during_quarantine"
+        name = "quarantine_mode_blocks_extension_enablement"
         threat_class = "extension_path_bypass"
         command = "cargo"
-        args = @("test", "-p", "control_plane", "quarantine_mode_blocks_")
+        args = @("test", "-p", "control_plane", "extension_host::tests::quarantine_mode_blocks_extension_enablement", "--", "--exact")
+    },
+    @{
+        name = "quarantine_mode_blocks_mcp_issue_and_authorization"
+        threat_class = "extension_path_bypass"
+        command = "cargo"
+        args = @("test", "-p", "control_plane", "extension_host::tests::quarantine_mode_blocks_mcp_issue_and_authorization", "--", "--exact")
     }
 )
 

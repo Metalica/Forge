@@ -1,0 +1,55 @@
+﻿{
+    "schema_version":  1,
+    "corpus":  "relay_adversarial_corpus",
+    "generated_at_utc":  "2026-03-28T04:30:23.9458830Z",
+    "entries":  [
+                    {
+                        "id":  "prompt_injection_directive_override",
+                        "threat_class":  "prompt_injection",
+                        "path":  "prompt_injection_directive_override.md",
+                        "sha256":  "be3fae5991dee8b14ab041536899036c28b4d01e9f21a110ed2b8a95e9e1d070"
+                    },
+                    {
+                        "id":  "secret_leak_exfil_prompt",
+                        "threat_class":  "secret_leak",
+                        "path":  "secret_leak_exfil_prompt.txt",
+                        "sha256":  "0b057997ae7d7080e9999cd3ad2fca906141b759a24e9c9a80ca31f105008581"
+                    },
+                    {
+                        "id":  "token_confusion_cross_audience",
+                        "threat_class":  "token_confusion",
+                        "path":  "token_confusion_cross_audience.json",
+                        "sha256":  "d48c6310eb3b5de94d23da7d842ce99aa529f9e96f718e963ceefa0c5745a969"
+                    },
+                    {
+                        "id":  "cache_poisoning_replay_payload",
+                        "threat_class":  "cache_poisoning",
+                        "path":  "cache_poisoning_replay_payload.json",
+                        "sha256":  "cd3c61c477f789232d82395687607a5da43017f7589c576d4277f875ebfbac39"
+                    },
+                    {
+                        "id":  "relay_fallback_abuse_prompt",
+                        "threat_class":  "relay_fallback_abuse",
+                        "path":  "relay_fallback_abuse_prompt.md",
+                        "sha256":  "0c8d4f9574782e6f8a6d5da12df0f0340a55313ffb27730141de78c4c1bfcd82"
+                    },
+                    {
+                        "id":  "telemetry_leak_marker_payload",
+                        "threat_class":  "telemetry_leak",
+                        "path":  "telemetry_leak_marker_payload.json",
+                        "sha256":  "76a4a7a5ab28837f9c70bfbd8c1f3d6fddf763fcb4e62eeb9dc571055c12ac77"
+                    },
+                    {
+                        "id":  "memory_poisoning_session_patch",
+                        "threat_class":  "memory_poisoning",
+                        "path":  "memory_poisoning_session_patch.json",
+                        "sha256":  "e2bea384d5e4899b7018fc516485dd86dfbf4268acc6633098aae197a91a860d"
+                    },
+                    {
+                        "id":  "workspace_traversal_payload",
+                        "threat_class":  "path_traversal",
+                        "path":  "workspace_traversal_payload.txt",
+                        "sha256":  "28f2a06cc92c4750c1a82949740518638bed988f8de30fc768380257c2f3aa51"
+                    }
+                ]
+}

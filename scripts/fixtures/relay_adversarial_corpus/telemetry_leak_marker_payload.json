@@ -1,0 +1,5 @@
+﻿{
+  "request_id": "fixture-telemetry-leak-001",
+  "trace": "BEGIN_SECRET:key=sk-test-1234567890abcdef",
+  "expected_result": "redact_before_persist_or_export"
+}

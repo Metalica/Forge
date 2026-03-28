@@ -1,0 +1,9 @@
+﻿{
+  "request_id": "fixture-token-confusion-001",
+  "token": {
+    "aud": "provider-a",
+    "presented_to": "provider-b",
+    "scope": ["relay:issue", "relay:admin"]
+  },
+  "expected_result": "deny_audience_mismatch"
+}

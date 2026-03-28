@@ -1,0 +1,10 @@
+﻿{
+  "request_id": "fixture-cache-poisoning-001",
+  "nonce": "reused-nonce-0001",
+  "session_id": "session-live-1234",
+  "payload": {
+    "role": "assistant",
+    "content": "cached malicious answer"
+  },
+  "expected_result": "deny_replay_or_cache_poisoning"
+}
