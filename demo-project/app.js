@@ -1,0 +1,1 @@
+console.log('Hello from demo project on GitHub main.');
