@@ -108,6 +108,14 @@ Ensure-Report -Path (Join-Path $artifactRoot "artifact_supply_chain_integrity_re
         -ReportPath (Join-Path $artifactRoot "artifact_supply_chain_integrity_report.json") `
         -SbomPath (Join-Path $artifactRoot "forge_workspace_sbom.json")
 }
+Ensure-Report -Path (Join-Path $artifactRoot "runtime_update_chain_integrity_report.json") -Generator {
+    & "$PSScriptRoot\runtime_update_chain_integrity_check.ps1" `
+        -ReportPath (Join-Path $artifactRoot "runtime_update_chain_integrity_report.json")
+}
+Ensure-Report -Path (Join-Path $artifactRoot "release_candidate_secret_leak_report.json") -Generator {
+    & "$PSScriptRoot\release_candidate_secret_leak_check.ps1" `
+        -ReportPath (Join-Path $artifactRoot "release_candidate_secret_leak_report.json")
+}
 Ensure-Report -Path (Join-Path $artifactRoot "linux_integrity_enforcement_report.json") -Generator {
     & "$PSScriptRoot\linux_integrity_enforcement_check.ps1" -ReportPath (Join-Path $artifactRoot "linux_integrity_enforcement_report.json")
 }
@@ -180,6 +188,8 @@ $artifactSpecs = @(
     @{ name = "relay_adversarial_corpus_report"; path = (Join-Path $artifactRoot "relay_adversarial_corpus_report.json"); requirePassed = $true },
     @{ name = "boot_host_integrity_report"; path = (Join-Path $artifactRoot "boot_host_integrity_report.json"); requirePassed = $true },
     @{ name = "artifact_supply_chain_integrity_report"; path = (Join-Path $artifactRoot "artifact_supply_chain_integrity_report.json"); requirePassed = $true },
+    @{ name = "runtime_update_chain_integrity_report"; path = (Join-Path $artifactRoot "runtime_update_chain_integrity_report.json"); requirePassed = $true },
+    @{ name = "release_candidate_secret_leak_report"; path = (Join-Path $artifactRoot "release_candidate_secret_leak_report.json"); requirePassed = $true },
     @{ name = "linux_integrity_enforcement_report"; path = (Join-Path $artifactRoot "linux_integrity_enforcement_report.json"); requirePassed = $true },
     @{ name = "telemetry_split_redaction_report"; path = (Join-Path $artifactRoot "telemetry_split_redaction_report.json"); requirePassed = $true },
     @{ name = "broker_audit_events"; path = (Join-Path $artifactRoot "broker_audit_events.json"); requirePassed = $false },

@@ -123,6 +123,20 @@ function Repair-LinuxSoAliases {
     }
 }
 
+function Compute-HmacSha256 {
+    param(
+        [Parameter(Mandatory = $true)][byte[]]$KeyBytes,
+        [Parameter(Mandatory = $true)][string]$Text
+    )
+    $hmac = [System.Security.Cryptography.HMACSHA256]::new($KeyBytes)
+    try {
+        return $hmac.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Text))
+    }
+    finally {
+        $hmac.Dispose()
+    }
+}
+
 & "$PSScriptRoot\bootstrap_env.ps1"
 
 Ensure-Directory -Path $DestinationRoot
@@ -224,10 +238,37 @@ $manifestRows += [PSCustomObject]@{
 
 $manifestPath = Join-Path $releaseRoot "manifest.json"
 $manifestRows | ConvertTo-Json -Depth 6 | Set-Content -Path $manifestPath -Encoding UTF8
+$manifestSha256 = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$manifestShaPath = Join-Path $releaseRoot "manifest.json.sha256"
+Set-Content -LiteralPath $manifestShaPath -Value $manifestSha256 -Encoding UTF8
+
+$signingKeyEnv = "FORGE_RUNTIME_MANIFEST_SIGNING_KEY_B64"
+$signingKeyB64 = [Environment]::GetEnvironmentVariable($signingKeyEnv, "Process")
+if (-not [string]::IsNullOrWhiteSpace($signingKeyB64)) {
+    try {
+        $signingKeyBytes = [Convert]::FromBase64String($signingKeyB64.Trim())
+        $signature = Compute-HmacSha256 -KeyBytes $signingKeyBytes -Text $manifestSha256
+        $signaturePayload = [PSCustomObject]@{
+            schema_version = 1
+            generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+            algorithm = "hmac-sha256"
+            digest_sha256 = $manifestSha256
+            signature_b64 = [Convert]::ToBase64String($signature)
+            signing_key_env = $signingKeyEnv
+            release_tag = $tagName
+        }
+        $signaturePath = Join-Path $releaseRoot "manifest.signature.json"
+        $signaturePayload | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $signaturePath -Encoding UTF8
+    }
+    catch {
+        throw "Failed to sign release manifest with env key '$signingKeyEnv': $($_.Exception.Message)"
+    }
+}
 
 Write-Host ""
 Write-Host "llama.cpp release matrix download complete."
 Write-Host "release: $tagName"
 Write-Host "root: $releaseRoot"
 Write-Host "manifest: $manifestPath"
+Write-Host "manifest.sha256: $manifestShaPath"
 Write-Host "note: if Linux CUDA or Windows Vulkan binaries are needed and not present in release assets, build from source zip in extracted/."

@@ -61,6 +61,10 @@ function Ensure-PolicyIntegrityKey {
 & "$PSScriptRoot\artifact_supply_chain_integrity_check.ps1" `
     -ReportPath (Join-Path $securityArtifactRoot "artifact_supply_chain_integrity_report.json") `
     -SbomPath (Join-Path $securityArtifactRoot "forge_workspace_sbom.json")
+& "$PSScriptRoot\runtime_update_chain_integrity_check.ps1" `
+    -ReportPath (Join-Path $securityArtifactRoot "runtime_update_chain_integrity_report.json")
+& "$PSScriptRoot\release_candidate_secret_leak_check.ps1" `
+    -ReportPath (Join-Path $securityArtifactRoot "release_candidate_secret_leak_report.json")
 & "$PSScriptRoot\linux_integrity_enforcement_check.ps1" -ReportPath (Join-Path $securityArtifactRoot "linux_integrity_enforcement_report.json")
 
 $policyBaselinePath = Join-Path $securityArtifactRoot "policy_integrity_baseline.json"
@@ -105,6 +109,8 @@ if (-not (Test-Path -LiteralPath $policyBaselinePath)) {
 & "$PSScriptRoot\test_relay_adversarial_corpus_check.ps1"
 & "$PSScriptRoot\test_boot_host_integrity_check.ps1"
 & "$PSScriptRoot\test_artifact_supply_chain_integrity_check.ps1"
+& "$PSScriptRoot\test_runtime_update_chain_integrity_check.ps1"
+& "$PSScriptRoot\test_release_candidate_secret_leak_check.ps1"
 & "$PSScriptRoot\test_linux_integrity_enforcement_check.ps1"
 
 & "$PSScriptRoot\p0_acceptance_evidence_bundle.ps1"
