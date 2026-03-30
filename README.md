@@ -54,7 +54,7 @@ Forge is:
 - coding workspace
 - local LLM support
 - agent workflows
-- image and video job paths
+- image job paths
 - runtime lifecycle management
 - source registry
 - job queue
