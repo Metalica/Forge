@@ -18,3 +18,9 @@ urm = { path = "../urm" }
 floem = { git = "https://github.com/lapce/floem", rev = "14fa7e912f62a921301af4445c1472d7770e2220", default-features = false, features = ["vger", "editor"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(windows)'.build-dependencies]
+ico = "0.4"
+image = { version = "0.25", default-features = false, features = ["png"] }
+winres = "0.1"

@@ -34,7 +34,7 @@ use floem::AnyView;
 use floem::Application;
 use floem::prelude::*;
 use floem::views::{PlaceholderTextClass, TextInputClass};
-use floem::window::{Icon, WindowConfig};
+use floem::window::{Icon, RgbaIcon, WindowConfig};
 use runtime_registry::{
     confidential_relay::{
         AttestationEvidence, AttestationVerifierConfig, ConfidentialEndpointMetadata,

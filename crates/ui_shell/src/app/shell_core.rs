@@ -18,6 +18,9 @@ pub fn launch_desktop() {
         .run();
 }
 
+const FORGE_ICON_PNG: &[u8] = include_bytes!("../../../../image/Forge.png");
+const FORGE_WINDOW_ICON_EDGE: u32 = 256;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct VideoCheckpointState {
     asset_id: u64,
@@ -707,7 +710,26 @@ fn nav_button(
 }
 
 fn forge_window_icon() -> Option<Icon> {
-    None
+    let decoded = image::load_from_memory(FORGE_ICON_PNG).ok()?;
+    let resized = decoded.resize_exact(
+        FORGE_WINDOW_ICON_EDGE,
+        FORGE_WINDOW_ICON_EDGE,
+        image::imageops::FilterType::Lanczos3,
+    );
+    let rgba = resized.into_rgba8();
+    let (width, height) = rgba.dimensions();
+    RgbaIcon::new(rgba.into_raw(), width, height)
+        .ok()
+        .map(Into::into)
+}
+
+fn forge_sidebar_brand() -> impl IntoView {
+    Stack::horizontal((
+        floem::views::img(|| FORGE_ICON_PNG.to_vec())
+            .style(|s| s.size(24.0, 24.0).border_radius(4.0)),
+        Label::new("Forge").style(|s| s.font_size(16.0)),
+    ))
+    .style(|s| s.width_full().items_center().gap(8.0).padding_horiz(8.0).padding_vert(6.0))
 }
 
 fn left_rail(
@@ -773,6 +795,7 @@ fn left_rail(
     .style(|s| s.width_full().height(148.0));
 
     Stack::vertical((
+        forge_sidebar_brand(),
         nav_button(PrimaryView::Workspace, active_view),
         nav_button(PrimaryView::Code, active_view),
         nav_button(PrimaryView::Chat, active_view),
