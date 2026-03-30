@@ -13,7 +13,7 @@ Forge treats **CPU, RAM, GPU, and VRAM as a coordinated execution fabric**, not 
 Current direction already includes:
 
 - native Rust desktop shell
-- Floem UI
+- Egui UI
 - managed `llama.cpp`
 - Runtime Registry
 - Agent Studio
