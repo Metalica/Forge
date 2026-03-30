@@ -150,6 +150,49 @@ function Invoke-Checked {
     }
 }
 
+function Get-CargoAuditArgsFromPolicy {
+    param(
+        [Parameter(Mandatory = $true)][string]$WorkspaceRoot
+    )
+
+    $args = @(
+        "audit",
+        "--deny",
+        "warnings"
+    )
+    $policyPath = Join-Path $WorkspaceRoot ".cargo\audit-policy.json"
+    if (-not (Test-Path -LiteralPath $policyPath)) {
+        return ,$args
+    }
+
+    $policy = $null
+    try {
+        $policy = Get-Content -LiteralPath $policyPath -Raw | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+        throw "Invalid cargo-audit policy JSON at ${policyPath}: $($_.Exception.Message)"
+    }
+
+    foreach ($targetOs in @($policy.target_os)) {
+        if (-not [string]::IsNullOrWhiteSpace($targetOs)) {
+            $args += @("--target-os", $targetOs.Trim().ToLowerInvariant())
+        }
+    }
+    foreach ($targetArch in @($policy.target_arch)) {
+        if (-not [string]::IsNullOrWhiteSpace($targetArch)) {
+            $args += @("--target-arch", $targetArch.Trim().ToLowerInvariant())
+        }
+    }
+    foreach ($advisoryId in @($policy.ignore_advisories)) {
+        if (-not [string]::IsNullOrWhiteSpace($advisoryId)) {
+            $args += @("--ignore", $advisoryId.Trim().ToUpperInvariant())
+        }
+    }
+
+    Write-Host "Loaded cargo-audit policy from $policyPath"
+    return ,$args
+}
+
 Write-Host "Running rustfmt check..."
 Invoke-Checked -Command "cargo" -Arguments @("fmt", "--all", "--", "--check")
 
@@ -162,11 +205,7 @@ Invoke-Checked -Command "cargo" -Arguments @("test", "--workspace")
 if (-not $SkipDependencyAudit) {
     if (Get-Command cargo-audit -ErrorAction SilentlyContinue) {
         Write-Host "Running cargo-audit..."
-        $cargoAuditArgs = @(
-            "audit",
-            "--deny",
-            "warnings"
-        )
+        $cargoAuditArgs = Get-CargoAuditArgsFromPolicy -WorkspaceRoot $workspaceRoot
         Invoke-Checked -Command "cargo" -Arguments $cargoAuditArgs
     }
     else {

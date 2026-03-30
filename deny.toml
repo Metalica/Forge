@@ -8,7 +8,19 @@ targets = [
 [advisories]
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
-ignore = []
+# Accepted transitive advisories blocked on upstream floem/winit GTK migration.
+# Keep this list aligned with `.cargo/audit-policy.json`.
+ignore = [
+  "RUSTSEC-2024-0412",
+  "RUSTSEC-2024-0413",
+  "RUSTSEC-2024-0415",
+  "RUSTSEC-2024-0416",
+  "RUSTSEC-2024-0418",
+  "RUSTSEC-2024-0419",
+  "RUSTSEC-2024-0420",
+  "RUSTSEC-2024-0436",
+  "RUSTSEC-2024-0370",
+]
 
 [licenses]
 allow = [
@@ -35,3 +47,9 @@ skip-tree = []
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = [
+  "https://github.com/lapce/floem",
+  "https://github.com/lapce/winit",
+  "https://github.com/lapce/vger-rs",
+  "https://github.com/jrmoulton/understory",
+]

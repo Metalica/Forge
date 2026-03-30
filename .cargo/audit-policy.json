@@ -1,0 +1,32 @@
+{
+  "target_os": [
+    "windows"
+  ],
+  "target_arch": [
+    "x86_64"
+  ],
+  "ignore_advisories": [
+    "RUSTSEC-2024-0412",
+    "RUSTSEC-2024-0413",
+    "RUSTSEC-2024-0415",
+    "RUSTSEC-2024-0416",
+    "RUSTSEC-2024-0418",
+    "RUSTSEC-2024-0419",
+    "RUSTSEC-2024-0420",
+    "RUSTSEC-2024-0429",
+    "RUSTSEC-2024-0436",
+    "RUSTSEC-2024-0370"
+  ],
+  "advisory_notes": {
+    "RUSTSEC-2024-0412": "gtk3/gdk advisory inherited via floem; no maintained upstream replacement available in current stack",
+    "RUSTSEC-2024-0413": "gtk3/atk advisory inherited via floem; no maintained upstream replacement available in current stack",
+    "RUSTSEC-2024-0415": "gtk3 advisory inherited via floem; no maintained upstream replacement available in current stack",
+    "RUSTSEC-2024-0416": "gtk3/atk-sys advisory inherited via floem; no maintained upstream replacement available in current stack",
+    "RUSTSEC-2024-0418": "gtk3/gdk-sys advisory inherited via floem; no maintained upstream replacement available in current stack",
+    "RUSTSEC-2024-0419": "gtk3-macros advisory inherited via floem; no maintained upstream replacement available in current stack",
+    "RUSTSEC-2024-0420": "gtk3/gtk-sys advisory inherited via floem; no maintained upstream replacement available in current stack",
+    "RUSTSEC-2024-0429": "glib unsound iterator advisory in gtk3 dependency chain; transitive and blocked on upstream dependency migration",
+    "RUSTSEC-2024-0436": "paste crate is unmaintained; inherited transitively via floem/wgpu stack",
+    "RUSTSEC-2024-0370": "proc-macro-error is unmaintained; inherited transitively via gtk3/glib macros"
+  }
+}

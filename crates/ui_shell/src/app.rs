@@ -33,7 +33,7 @@ use execution_plane::{
 use floem::AnyView;
 use floem::Application;
 use floem::prelude::*;
-use floem::views::{ButtonClass, PlaceholderTextClass, TextInputClass};
+use floem::views::{PlaceholderTextClass, TextInputClass};
 use floem::window::{Icon, WindowConfig};
 use runtime_registry::{
     confidential_relay::{

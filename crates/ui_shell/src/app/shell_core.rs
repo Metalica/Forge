@@ -675,7 +675,6 @@ fn forge_view() -> impl IntoView {
         s.size_full()
             .background(theme::window_bg())
             .color(theme::text_primary())
-            .class(ButtonClass, |s| s.color(theme::input_text()))
             .class(TextInputClass, |s| s.color(theme::input_text()))
             .class(PlaceholderTextClass, |s| s.color(theme::input_text()))
     })
